@@ -1036,12 +1036,19 @@ test_worker_role_scope() {
     fi
     brief="$home/data/$kind/brief.md"
     assert_no_grep '# Current worker role contract' "$brief" "$kind scaffolded a second owner of the role scope fm-spawn.sh delivers"
+    assert_grep 'the only paths this task authorizes under a firstmate home' "$brief" "$kind scaffold dropped the worker home-path boundary"
+    assert_grep 'do not retry it in another form and do not work around the guard' "$brief" "$kind scaffold dropped the protected-directory refusal guidance"
+    assert_grep 'the only paths you may touch outside it are' "$brief" "$kind scaffold left its worktree isolation rule contradicting the status protocol"
+    if [ "$kind" = scout ]; then
+      assert_grep 'the report, your status file, and your steering inbox' "$brief" "scout scaffold lost the report carve-out in its worktree isolation rule"
+    fi
   done
   FM_HOME="$home" FM_SECONDMATE_CHARTER='Supervise assigned work.' \
     "$ROOT/bin/fm-brief.sh" supervisor --secondmate --no-projects >/dev/null || fail "secondmate scaffold failed"
   brief="$home/data/supervisor/brief.md"
   assert_no_grep '# Current worker role contract' "$brief" "secondmate received the worker exception"
   assert_no_grep 'do not adopt the supervisor identity' "$brief" "secondmate received the worker exception"
+  assert_no_grep 'the only paths this task authorizes under a firstmate home' "$brief" "secondmate received the worker home-path boundary"
   assert_grep "The local \`AGENTS.md\` is your job description" "$brief" "secondmate lost its supervisor contract"
   assert_grep 'That file is your parent channel' "$brief" "secondmate lost its parent channel"
   pass "fm-brief: scaffolds leave the worker role scope to the launch boundary and keep the secondmate contract"

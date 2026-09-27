@@ -1541,6 +1541,7 @@ SH
     assert_grep "$inbox" "$prompt" "$kind command did not name the worker's own steering inbox"
     assert_grep "do not reject it as another home's state" "$prompt" "$kind command did not distinguish its inbox from another home's namespace"
     assert_grep "Never inspect or change any other home's endpoint namespace" "$prompt" "$kind command weakened cross-home isolation"
+    assert_grep "never inspect or change any path under a firstmate home - your supervising home included" "$prompt" "$kind command left the supervising home's paths unrestricted"
     assert_grep 'brief for' "$prompt" "$kind command lost the task"
     [ "$(grep -c '^# Current worker role contract$' "$prompt")" -eq 1 ] ||
       fail "$brief_kind $kind duplicated the delivered worker contract"

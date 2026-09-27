@@ -346,6 +346,20 @@ STATUS_FILE=$(shell_quote "$STATE/$ID.status")
 STATUS_APPEND="echo \"{state} [at=<epoch>]: {one short line}\" >> $STATUS_FILE && { [ ! -e $(shell_quote "$CONFIG/fleet-ledger") ] || $(shell_quote "$FM_ROOT/bin/fm-fleet-ledger.sh") appended $(shell_quote "$CONFIG") $STATUS_FILE >/dev/null 2>&1 || true; }"
 INBOX_DIR=$(shell_quote "$STATE/$ID.inbox")
 
+# The bounded home-path scope shared by every worker scaffold (ship and scout).
+# A worker's status recipe names absolute paths under the supervising home and its
+# optional fleet-ledger branch names firstmate's own script, so a diligent worker can
+# start scanning that home to understand firstmate's bookkeeping and land on the
+# protected-directory guard. This note keeps it on its own task paths instead.
+# Secondmate charters own their home and must never carry it.
+IFS= read -r -d '' STATUS_SCOPE_NOTE <<'EOF' || true
+   Outside your worktree, the only paths this task authorizes under a firstmate home are the exact task paths this brief names for you: your status file above, your own steering inbox below, and any report path it gives you.
+   Run that status command exactly as written: it is complete, and its `fleet-ledger` branch is firstmate's own bookkeeping that you never need to open, read, or look up.
+   Never scan, list, search, or read any other path under a firstmate home, never hunt for a `*.status` file, and never rewrite the status path relative to your worktree.
+   If a protected-directory guard blocks a command, do not retry it in another form and do not work around the guard: that block means you aimed at such a path, so drop it and continue your assigned task.
+EOF
+STATUS_SCOPE_NOTE=${STATUS_SCOPE_NOTE%$'\n'}
+
 # The receive-and-ack half of the steering-inbox contract, included in every
 # scaffold kind. The record format, doorbell line, and re-ring ladder are
 # owned by bin/fm-task-inbox-lib.sh; the doorbell itself is self-describing,
@@ -552,10 +566,11 @@ The report is the only thing that survives, so anything worth keeping must be in
 
 # Rules
 1. Never push to any remote and never open a PR.
-2. Stay inside this worktree; the only files you may write outside it are the report and the status file below.
+2. Stay inside this worktree; the only paths you may touch outside it are the report, your status file, and your steering inbox below.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`$STATUS_APPEND\`
+$STATUS_SCOPE_NOTE
    States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
    Substitute \`<epoch>\` with the current Unix time in seconds - run \`date +%s\` and write the number it printed; a stamp that is not plain digits records no time at all.
    Each append wakes firstmate, so report sparingly: only phase changes a supervisor
@@ -626,10 +641,11 @@ If the top-level path is the primary checkout or not the worktree you were launc
 
 # Rules
 $RULE1
-2. Stay inside this worktree; modify nothing outside it.
+2. Stay inside this worktree; the only paths you may touch outside it are your status file and your steering inbox below.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`$STATUS_APPEND\`
+$STATUS_SCOPE_NOTE
    States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
    Substitute \`<epoch>\` with the current Unix time in seconds - run \`date +%s\` and write the number it printed; a stamp that is not plain digits records no time at all.
    Each append wakes firstmate, so report sparingly: only phase changes a supervisor
