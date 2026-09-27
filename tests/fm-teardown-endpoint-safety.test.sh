@@ -983,6 +983,124 @@ test_reassigned_pool_slot_finishes_own_cleanup_without_touching_the_slot() {
   pass "fm-teardown: a pool slot claimed by another task is left alone while the task's own cleanup finishes"
 }
 
+# The ordering defect: when the reassigned slot is ALSO named by a second live
+# record, the record-exclusivity scan and the reassignment claim disagree. The
+# claim is the stronger evidence and must be read first - before the fix the
+# scan refused on the very reassignment the claim proves, stranding the stale
+# record behind a refusal that --force could not lift and no operator could
+# clear. The matrix pins the order for every claim state, in exactly the
+# two-record shape that exposed the bug.
+test_second_record_and_reassigned_slot_finish_own_cleanup() {
+  local dir id=stale-task other=live-task worker rc
+
+  # Claim names the OTHER task: the slot is not this task's, so its own cleanup
+  # finishes and the slot - the second record, its worker, its copy, its claim -
+  # is left exactly as found.
+  dir=$(make_case slot-reassigned-second-record)
+  mark_case_as_treehouse_pool "$dir"
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=firstmate:fm-$id" "endpoint_task_id=$id" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  fm_write_meta "$dir/home/state/$other.meta" \
+    "window=firstmate:fm-$other" "endpoint_task_id=$other" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  claim_pool_slot "$dir" "$other" "$dir/other-home"
+  ( cd "$dir/worktree" && exec sleep 30 ) &
+  worker=$!
+  set +e
+  run_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] \
+    || fail "teardown refused a reassigned slot its own claim proves is not this task's: $(cat "$dir/stderr")"
+  kill -0 "$worker" 2>/dev/null || fail "teardown killed the worker holding the reassigned slot"
+  assert_reassigned_slot_left_alone "$dir" "$id" "$other" "reassigned slot named by a second live record"
+  assert_present "$dir/home/state/$other.meta" "teardown removed the second record's metadata"
+  kill "$worker" 2>/dev/null || true
+  wait "$worker" 2>/dev/null || true
+
+  # Claim names THIS task while a second record names the same slot: the claim
+  # does not authorize touching a slot a second record holds, so the record scan
+  # still refuses and the live worker survives. This is the protection the fix
+  # must not relax.
+  dir=$(make_case slot-own-claim-second-record)
+  mark_case_as_treehouse_pool "$dir"
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=firstmate:fm-$id" "endpoint_task_id=$id" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  fm_write_meta "$dir/home/state/$other.meta" \
+    "window=firstmate:fm-$other" "endpoint_task_id=$other" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  claim_pool_slot "$dir" "$id"
+  ( cd "$dir/worktree" && exec sleep 30 ) &
+  worker=$!
+  set +e
+  run_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "teardown returned a slot a second record still holds under this task's own claim"
+  kill -0 "$worker" 2>/dev/null || fail "own-claim collision killed the live worker"
+  assert_present "$dir/worktree/sentinel" "own-claim collision reset the slot"
+  assert_present "$dir/home/state/$id.meta" "own-claim collision removed the stale record"
+  assert_present "$dir/home/state/$other.meta" "own-claim collision removed the second record"
+  [ ! -s "$dir/runtime.log" ] \
+    || fail "own-claim collision reached the runtime: $(cat "$dir/runtime.log")"
+  assert_contains "$(cat "$dir/stderr")" "$other" "own-claim collision should name the other record"
+  kill "$worker" 2>/dev/null || true
+  wait "$worker" 2>/dev/null || true
+
+  # No claim plus a second live record: absent proves nothing, so the record
+  # scan keeps exactly the protection it had before and refuses.
+  dir=$(make_case slot-absent-claim-second-record)
+  mark_case_as_treehouse_pool "$dir"
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=firstmate:fm-$id" "endpoint_task_id=$id" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  fm_write_meta "$dir/home/state/$other.meta" \
+    "window=firstmate:fm-$other" "endpoint_task_id=$other" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  ( cd "$dir/worktree" && exec sleep 30 ) &
+  worker=$!
+  set +e
+  run_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "teardown returned an unclaimed slot a second record still holds"
+  kill -0 "$worker" 2>/dev/null || fail "absent-claim collision killed the live worker"
+  assert_present "$dir/worktree/sentinel" "absent-claim collision reset the slot"
+  assert_present "$dir/home/state/$id.meta" "absent-claim collision removed the stale record"
+  [ ! -s "$dir/runtime.log" ] \
+    || fail "absent-claim collision reached the runtime: $(cat "$dir/runtime.log")"
+  assert_contains "$(cat "$dir/stderr")" "$other" "absent-claim collision should name the other record"
+  kill "$worker" 2>/dev/null || true
+  wait "$worker" 2>/dev/null || true
+
+  # A claim that cannot be read proves nothing either way and refuses before the
+  # record scan can even be reached, even when a second record also names the
+  # slot.
+  dir=$(make_case slot-unreadable-claim-second-record)
+  mark_case_as_treehouse_pool "$dir"
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=firstmate:fm-$id" "endpoint_task_id=$id" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  fm_write_meta "$dir/home/state/$other.meta" \
+    "window=firstmate:fm-$other" "endpoint_task_id=$other" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  printf 'not-a-claim\n' > "$dir/pool/1/.fm-slot-owner"
+  set +e
+  run_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "teardown returned a slot whose claim could not be read"
+  assert_present "$dir/worktree/sentinel" "unreadable-claim collision reset the slot"
+  assert_present "$dir/pool/1/.fm-slot-owner" "unreadable-claim collision removed the claim"
+  assert_present "$dir/home/state/$id.meta" "unreadable-claim collision removed the stale record"
+  [ ! -s "$dir/runtime.log" ] \
+    || fail "unreadable-claim collision reached the runtime: $(cat "$dir/runtime.log")"
+
+  pass "fm-teardown: a reassigned slot named by a second live record finishes the stale task's own cleanup while every non-reassignment claim still refuses"
+}
+
 # The two states that must never become a false refusal: the task's own claim,
 # and no claim at all (a slot taken before claims existed, or already returned).
 test_own_and_absent_slot_claims_still_tear_down() {
@@ -1403,6 +1521,7 @@ test_reused_pool_slot_refuses_before_touching_the_other_task
 test_cross_home_pool_slot_collision_refuses
 test_sole_slot_record_still_tears_down
 test_reassigned_pool_slot_finishes_own_cleanup_without_touching_the_slot
+test_second_record_and_reassigned_slot_finish_own_cleanup
 test_own_and_absent_slot_claims_still_tear_down
 test_recorded_endpoint_that_changed_directory_still_tears_down
 test_project_lock_anchors_at_the_local_root_across_home_layouts

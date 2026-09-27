@@ -111,6 +111,13 @@
 # absent claim - a slot taken before claims existed, or already returned - keeps
 # exactly the record-scan protection it had before, because refusing it would
 # strand every task in flight across that change on no evidence at all.
+# The claim is read BEFORE the record scan, because a reassigned slot and a
+# record collision are indistinguishable to that scan: both are one live path
+# named by a second record. The scan therefore runs only once the claim has
+# failed to prove reassignment, so a slot this task no longer owns is skipped
+# rather than scanned; running the scan first refused on the exact reassignment
+# the claim proves and stranded the record (the teardown-slot-collision ordering
+# defect).
 # Why Treehouse's own state cannot answer this for crewmate slots, and why the
 # claim file sits on top of it, is owned by bin/fm-wake-lib.sh's slot-owner
 # claim comment.
@@ -2366,6 +2373,11 @@ require_exclusive_worktree_slot_record() {
 
 require_exclusive_task_worktree_slot() {
   local slot
+  # Only a slot this task still owns can collide: a reassigned slot is skipped
+  # wholesale, so its second record is the reassignment the claim already
+  # proved, not a collision to refuse over. This runs after
+  # require_owned_task_worktree_slot has set that verdict.
+  teardown_owns_worktree || return 0
   slot=$(teardown_live_slot_path) || return 0
   require_exclusive_worktree_slot_record "$META" "$ID" "$STATE" "$slot"
 }
@@ -2956,11 +2968,14 @@ preflight_descendant_treehouse_slots() {
       continue
     fi
     fm_backend_validate_task_endpoint "$meta" "$task_id" || return 1
-    require_exclusive_worktree_slot_record "$meta" "$task_id" "$state" "$worktree" || return 1
+    # Ownership before exclusivity, in the same order as the parent's own slot
+    # determination: a reassigned child slot is skipped wholesale, so the record
+    # scan must not run - and refuse - ahead of the claim that proves it.
     owner_rc=0
     require_owned_worktree_slot_record "$task_id" "$worktree" || owner_rc=$?
     case "$owner_rc" in
-      0|"$TEARDOWN_SLOT_REASSIGNED_RC") ;;
+      0) require_exclusive_worktree_slot_record "$meta" "$task_id" "$state" "$worktree" || return 1 ;;
+      "$TEARDOWN_SLOT_REASSIGNED_RC") ;;
       *) return 1 ;;
     esac
   done
@@ -3305,8 +3320,12 @@ remove_secondmate_registry_entry() {
   return "$rc"
 }
 
-require_exclusive_task_worktree_slot || exit 1
+# The claim is read first and the record scan second, in this order: the claim
+# is the stronger evidence, and a reassigned slot looks exactly like a record
+# collision to the scan. Scanning first refused a slot this task no longer owns
+# and stranded the record (the teardown-slot-collision ordering defect).
 require_owned_task_worktree_slot || exit 1
+require_exclusive_task_worktree_slot || exit 1
 
 validate_pr_poll_cleanup "$STATE" "$ID" || exit 1
 
