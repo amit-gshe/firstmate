@@ -232,6 +232,225 @@ SH
   pass "session-lock: ownership stops at the first non-harness gap above the contiguous run"
 }
 
+# The wake-grant authorization entry (bin/fm-wake-grant.sh activate) asks
+# fm_session_lock_authorizes_pid before it installs the branch owner record: the
+# named pid must BE the lock owner, or this process must run inside that owner's
+# own session. Ancestry alone is not that test - a harness subprocess that
+# inherits the session's working directory and extensions names its own pid
+# while its own harness run sits below the lock holder. The live failure this
+# pins is a Magic Context historian subprocess, which installed the record with
+# its own pid and then exited before handling the rows it took, so supervisor
+# wake rows aimed at the session went unhandled.
+test_authorization_refuses_a_harness_subprocess_below_the_locked_session() {
+  local dir fakebin state
+  dir="$TMP_ROOT/authorization-subprocess"
+  fakebin=$(fm_fakebin "$dir")
+  state="$dir/state"
+  mkdir -p "$state"
+  # The lock holder (900) is this shell's grandparent harness: the walk stops at
+  # the background harness subprocess (1000) in between.
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+field= pid=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) field=$2; shift 2 ;;
+    -p) pid=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "$pid:$field" in
+  900:comm=) printf '%s\n' pi ;;
+  900:args=) printf '%s\n' 'pi' ;;
+  900:ppid=) printf '%s\n' 1 ;;
+  1000:comm=) printf '%s\n' pi ;;
+  1000:args=) printf '%s\n' 'pi' ;;
+  1000:ppid=) printf '%s\n' 900 ;;
+  *:comm=) printf '%s\n' bash ;;
+  *:args=) printf '%s\n' 'bash /repo/bin/fm-wake-grant.sh' ;;
+  *:ppid=) printf '%s\n' 1000 ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+
+  printf '900\n' > "$state/.lock"
+  # Non-vacuity: the walk really stops below the lock holder, so this process is
+  # not inside the lock owner's session in the first place.
+  if lib_eval "$fakebin" "fm_session_lock_owned_by_self '$state'"; then
+    fail "a process below the lock holder was read as the lock owner's own session"
+  fi
+  if lib_eval "$fakebin" "fm_session_lock_authorizes_pid '$state' 1000"; then
+    fail "a harness subprocess below the locked session was authorized as the branch owner"
+  fi
+  # The lock owner's own pid is authorized without any ancestry help.
+  lib_eval "$fakebin" "fm_session_lock_authorizes_pid '$state' 900" \
+    || fail "the pid recorded in the lock was not authorized"
+
+  # An unrelated live owner authorizes nobody in this tree.
+  printf '901\n' > "$state/.lock"
+  if lib_eval "$fakebin" "fm_session_lock_authorizes_pid '$state' 1000"; then
+    fail "an unrelated lock owner authorized a foreign harness subprocess"
+  fi
+  # A home with no recorded lock authorizes nobody here: wake-grant's own no-lock
+  # allowance is a separate policy above this predicate.
+  rm -f "$state/.lock"
+  if lib_eval "$fakebin" "fm_session_lock_authorizes_pid '$state' 1000"; then
+    fail "a home with no recorded lock authorized a pid"
+  fi
+  if lib_eval "$fakebin" "fm_session_lock_authorizes_pid '$state' ''"; then
+    fail "an empty pid was authorized"
+  fi
+  if lib_eval "$fakebin" "fm_session_lock_authorizes_pid '$state' not-a-pid"; then
+    fail "a non-numeric pid was authorized"
+  fi
+  pass "session-lock: grant authorization refuses a harness subprocess that is not the locked session"
+}
+
+# The other half of that decision: the lock owner's own pid always authorizes,
+# and a process running inside the locked session may authorize its own pid even
+# though that pid is not the lock pid. The away-posture supervision host is
+# exactly that shape, so the gate cannot reduce to strict pid equality.
+test_authorization_accepts_the_locked_session_and_its_own_processes() {
+  local dir fakebin state
+  dir="$TMP_ROOT/authorization-session"
+  fakebin=$(fm_fakebin "$dir")
+  state="$dir/state"
+  mkdir -p "$state"
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+field= pid=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) field=$2; shift 2 ;;
+    -p) pid=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "$pid:$field" in
+  900:comm=) printf '%s\n' claude ;;
+  900:args=) printf '%s\n' 'claude' ;;
+  900:ppid=) printf '%s\n' 1 ;;
+  *:comm=) printf '%s\n' bash ;;
+  *:args=) printf '%s\n' 'bash /repo/bin/fm-supervision-host.sh park' ;;
+  *:ppid=) printf '%s\n' 900 ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+  printf '900\n' > "$state/.lock"
+
+  lib_eval "$fakebin" "fm_session_lock_authorizes_pid '$state' 900" \
+    || fail "the locked session's own pid was not authorized"
+  lib_eval "$fakebin" "fm_session_lock_owned_by_self '$state'" \
+    || fail "a process inside the locked session was not read as its owner"
+  # An ordinary shell inside the session authorizes its own pid, which is not the
+  # lock pid: this is the away-posture host's activate call.
+  lib_eval "$fakebin" "fm_session_lock_authorizes_pid '$state' 4242" \
+    || fail "a process inside the locked session could not authorize its own pid"
+
+  # The same process authorizes nobody once the lock names a session it is not
+  # part of.
+  printf '901\n' > "$state/.lock"
+  if lib_eval "$fakebin" "fm_session_lock_authorizes_pid '$state' 4242"; then
+    fail "a process outside the locked session authorized its own pid"
+  fi
+  pass "session-lock: grant authorization accepts the lock pid and processes inside the locked session"
+}
+
+# The third signal: a lock owner that is not itself a harness process, such as a
+# home locked by hand or by a test fixture's shell, leaves no harness identity to
+# anchor on. There, lineage is the evidence: the lock owner must be a plain
+# ancestor of the invoking process with no other harness session in between. The
+# Pi branch extension's own activation call is that shape, and refusing it broke
+# the real branch dispatch it exists to serve.
+test_authorization_accepts_a_non_harness_lock_owner_in_this_lineage() {
+  local dir fakebin fakebin_gap state
+  dir="$TMP_ROOT/authorization-lineage"
+  fakebin=$(fm_fakebin "$dir/lineage-bin")
+  fakebin_gap=$(fm_fakebin "$dir/lineage-gap-bin")
+  state="$dir/state"
+  mkdir -p "$state"
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+field= pid=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) field=$2; shift 2 ;;
+    -p) pid=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "$pid:$field" in
+  800:comm=) printf '%s\n' bash ;;
+  800:args=) printf '%s\n' 'bash /repo/bin/fm-wake-grant.sh' ;;
+  800:ppid=) printf '%s\n' 700 ;;
+  700:comm=) printf '%s\n' bash ;;
+  700:args=) printf '%s\n' 'bash /repo/session.sh' ;;
+  700:ppid=) printf '%s\n' 0 ;;
+  *:ppid=) printf '%s\n' 800 ;;
+  *:comm=) printf '%s\n' bash ;;
+  *:args=) printf '%s\n' 'bash /repo/bin/fm-wake-grant.sh' ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+  # The same table with a background harness session (750) between this process
+  # and the lock owner: the Magic Context historian shape, on a non-harness lock.
+  cat > "$fakebin_gap/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+field= pid=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) field=$2; shift 2 ;;
+    -p) pid=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "$pid:$field" in
+  800:comm=) printf '%s\n' bash ;;
+  800:args=) printf '%s\n' 'bash /repo/bin/fm-wake-grant.sh' ;;
+  800:ppid=) printf '%s\n' 750 ;;
+  750:comm=) printf '%s\n' pi ;;
+  750:args=) printf '%s\n' pi ;;
+  750:ppid=) printf '%s\n' 700 ;;
+  700:comm=) printf '%s\n' bash ;;
+  700:args=) printf '%s\n' 'bash /repo/session.sh' ;;
+  700:ppid=) printf '%s\n' 0 ;;
+  *:ppid=) printf '%s\n' 800 ;;
+  *:comm=) printf '%s\n' bash ;;
+  *:args=) printf '%s\n' 'bash /repo/bin/fm-wake-grant.sh' ;;
+esac
+SH
+  chmod +x "$fakebin_gap/ps"
+  printf '700\n' > "$state/.lock"
+
+  # Non-vacuity: no harness process appears in this chain at all, so the
+  # harness-anchored ownership decision cannot be what authorizes the pid.
+  if lib_eval "$fakebin" "fm_session_lock_owned_by_self '$state'"; then
+    fail "a harness-free ancestry was read as a harness session"
+  fi
+  lib_eval "$fakebin" "fm_session_lock_authorizes_pid '$state' 800" \
+    || fail "a process whose lineage reaches the non-harness lock owner was not authorized"
+  lib_eval "$fakebin" "fm_session_lock_authorizes_pid '$state' 700" \
+    || fail "the non-harness lock owner's own pid was not authorized"
+
+  # A lock owner outside this process's lineage authorizes nobody in it.
+  printf '701\n' > "$state/.lock"
+  if lib_eval "$fakebin" "fm_session_lock_authorizes_pid '$state' 800"; then
+    fail "a lock owner outside this process's lineage authorized it"
+  fi
+
+  # A harness session between this process and the lock owner is another
+  # session, so lineage stops there even though the walk would reach the lock.
+  printf '700\n' > "$state/.lock"
+  if lib_eval "$fakebin_gap" "fm_session_lock_authorizes_pid '$state' 800"; then
+    fail "a harness session between this process and the lock owner was not a boundary"
+  fi
+  pass "session-lock: grant authorization accepts a non-harness lock owner in this lineage"
+}
+
 test_competing_version_named_session_is_seen_as_live() {
   local dir fakebin
   dir="$TMP_ROOT/competing"
@@ -1097,6 +1316,9 @@ test_version_named_session_is_identified_on_both_platforms
 test_harness_at_namespace_pid1_is_examined
 test_ordinary_paths_are_never_harness_processes
 test_harness_beyond_a_gap_never_owns_the_lock
+test_authorization_refuses_a_harness_subprocess_below_the_locked_session
+test_authorization_accepts_the_locked_session_and_its_own_processes
+test_authorization_accepts_a_non_harness_lock_owner_in_this_lineage
 test_competing_version_named_session_is_seen_as_live
 test_same_session_id_owns_a_recycled_background_chain
 test_anchor_pid_is_the_model_loop_process_only_for_a_trusted_id

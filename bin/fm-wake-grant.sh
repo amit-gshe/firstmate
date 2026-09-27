@@ -4,6 +4,8 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-session-lock-lib.sh
+. "$SCRIPT_DIR/fm-session-lock-lib.sh"
 
 BRANCH_ROWS="$STATE/.branch-eligible-rows"
 BRANCH_OWNER="$STATE/.branch-eligible-owner"
@@ -36,6 +38,26 @@ case "${1:-}" in
     [ "$#" -eq 3 ] || exit 2
     case "$pid" in ''|*[!0-9]*|1) exit 2 ;; esac
     case "$generation" in ''|*[!A-Za-z0-9._-]*) exit 2 ;; esac
+    # The recorded session lock, when this home has one, is the single
+    # authority for branch-eligible wake rows: only that session - its own pid,
+    # or a process running inside it - may install the owner record.
+    # Without this gate a background subprocess of a DIFFERENT harness that
+    # inherits the session's working directory and loads its extensions can
+    # name a pid of its own, install the record, and then exit before handling
+    # the rows it claimed, so supervisor wake rows aimed at the session go
+    # unhandled.
+    # A home that records no session lock has no session to bind, so
+    # lock-free fixtures and standalone homes keep the previous behavior.
+    lock_pid=$(cat "$STATE/.lock" 2>/dev/null || true)
+    case "$lock_pid" in
+      ''|*[!0-9]*) ;;
+      *)
+        fm_session_lock_authorizes_pid "$STATE" "$pid" || {
+          echo "fm-wake-grant.sh: refusing to activate $pid: this home's session lock is held by $lock_pid" >&2
+          exit 1
+        }
+        ;;
+    esac
     identity=$(fm_pid_identity "$pid" 2>/dev/null) || exit 1
     [ -n "$identity" ] || exit 1
     TMP=$(mktemp "$STATE/.branch-eligible-owner.tmp.XXXXXX") || exit 1

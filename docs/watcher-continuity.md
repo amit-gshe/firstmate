@@ -251,6 +251,8 @@ Every presented row is claimed to exactly one actor under the durable queue lock
 - Main records its presented set in `state/.main-eligible-rows`.
 - A branch grant is published through `bin/fm-wake-grant.sh` under that same lock in `state/.branch-eligible-rows`.
   The grant is bound to the live branch process and extension generation recorded in `state/.branch-eligible-owner`.
+  Activation is authorized only for this home's locked session, named directly, by a process running inside it, or by a process whose lineage reaches a non-harness lock owner without crossing another harness session (`fm_session_lock_authorizes_pid` in `bin/fm-session-lock-lib.sh`), so a harness subprocess cannot claim the grant with a pid of its own and then exit without presenting the rows.
+  A home that records no lock has no session to bind, so activation keeps its unchecked behavior there.
   Publication is refused if main already claimed any requested row.
 - A main drain validates that owner evidence under the queue lock and reclaims the grant when its process is gone or its identity no longer matches.
 - A main drain claims every currently unclaimed row and excludes an active branch grant from both presentation and acknowledgement.

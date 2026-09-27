@@ -3391,6 +3391,117 @@ test_actor_filter_precedes_same_key_deduplication
 test_main_reclaims_a_grant_whose_branch_owner_exited
 test_branch_actor_without_eligible_snapshot_refuses
 test_wake_publish_requires_atomic_recovery_evidence
+# bin/fm-wake-grant.sh's activate entry installs the record naming the pid that
+# may publish branch-eligible wake rows. It refuses a pid that is not this home's
+# locked session, because a background harness subprocess that inherits the
+# session's working directory and extensions used to install that record with
+# its own pid, exit without handling the rows it claimed, and leave supervisor
+# wake rows aimed at the session unhandled.
+#
+# Real process tree, not a fixture table: two shells exec'd under the harness
+# name `pi` (ps reports the name a process was exec'd under, so these are what
+# the session-lock ancestry walk reads as Pi). The outer one is the session and
+# records its own pid in .lock; the inner one is its subprocess and names itself.
+test_branch_owner_activation_requires_the_locked_session() {
+  local dir state pi_bin lock_pid subprocess_pid
+  dir=$(make_case grant-session)
+  state="$dir/state"
+  pi_bin="$dir/fakebin/pi"
+  ln -sf /bin/bash "$pi_bin"
+
+  cat > "$dir/subprocess.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+# A background harness subprocess of the session: it names its own pid and must
+# be refused, leaving no owner record behind.
+if FM_STATE_OVERRIDE="$FM_TEST_STATE" "$FM_TEST_GRANT" activate "$$" gate-gen \
+    > "$FM_TEST_STATE/subprocess.out" 2> "$FM_TEST_STATE/subprocess.err"; then
+  printf 'allowed\n' > "$FM_TEST_STATE/subprocess.outcome"
+else
+  printf 'refused\n' > "$FM_TEST_STATE/subprocess.outcome"
+fi
+if [ -e "$FM_TEST_STATE/.branch-eligible-owner" ]; then
+  printf 'present\n' > "$FM_TEST_STATE/subprocess.record"
+else
+  printf 'absent\n' > "$FM_TEST_STATE/subprocess.record"
+fi
+printf '%s\n' "$$" > "$FM_TEST_STATE/subprocess.pid"
+SH
+
+  cat > "$dir/session.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+# The locked session: it records its own pid, spawns the subprocess above, and
+# only then installs its own owner record.
+printf '%s\n' "$$" > "$FM_TEST_STATE/.lock"
+rm -f "$FM_TEST_STATE/.branch-eligible-owner"
+"$FM_TEST_PI" "$FM_TEST_DIR/subprocess.sh"
+if FM_STATE_OVERRIDE="$FM_TEST_STATE" "$FM_TEST_GRANT" activate "$$" gate-gen \
+    2> "$FM_TEST_STATE/session.err"; then
+  printf 'allowed\n' > "$FM_TEST_STATE/session.outcome"
+else
+  printf 'refused\n' > "$FM_TEST_STATE/session.outcome"
+fi
+SH
+
+  env FM_TEST_STATE="$state" FM_TEST_DIR="$dir" FM_TEST_PI="$pi_bin" FM_TEST_GRANT="$GRANT" \
+    "$pi_bin" "$dir/session.sh" > "$dir/session.out" 2>&1 \
+    || fail "the session fixture exited nonzero: $(cat "$dir/session.out")"
+
+  lock_pid=$(tr -d '[:space:]' < "$state/.lock")
+  subprocess_pid=$(tr -d '[:space:]' < "$state/subprocess.pid")
+  [ -n "$lock_pid" ] && [ "$subprocess_pid" != "$lock_pid" ] \
+    || fail "the fixture did not build two distinct harness pids ('$lock_pid' and '$subprocess_pid')"
+  [ "$(cat "$state/subprocess.outcome" 2>/dev/null)" = refused ] \
+    || fail "a harness subprocess of the locked session installed the branch owner record"
+  grep -F 'refusing to activate' "$state/subprocess.err" >/dev/null \
+    || fail "the subprocess was not refused by the session-ownership gate: $(cat "$state/subprocess.err" 2>/dev/null)"
+  [ "$(cat "$state/subprocess.record" 2>/dev/null)" = absent ] \
+    || fail "the refused subprocess left a branch owner record behind"
+  [ "$(cat "$state/session.outcome" 2>/dev/null)" = allowed ] \
+    || fail "the session holding the lock could not install its own record: $(cat "$state/session.err" 2>/dev/null)"
+  [ "$(sed -n '2p' "$state/.branch-eligible-owner")" = "$lock_pid" ] \
+    || fail "the owner record names $(sed -n '2p' "$state/.branch-eligible-owner" 2>/dev/null), expected the locked session $lock_pid"
+  [ "$(sed -n '4p' "$state/.branch-eligible-owner")" = gate-gen ] \
+    || fail "the owner record lost its generation"
+
+  # The other shape of the same entry: a home locked by a process that is not a
+  # harness at all, with no harness name anywhere in the chain. Lineage is then
+  # the only evidence available, and a helper the session itself spawned must
+  # still be authorized - refusing it is what broke the real branch dispatch,
+  # whose activation call arrives from a non-harness process below the lock.
+  cat > "$dir/plain-helper.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "$$" > "$FM_TEST_STATE/plain.pid"
+if FM_STATE_OVERRIDE="$FM_TEST_STATE" "$FM_TEST_GRANT" activate "$$" lineage-gen \
+    > "$FM_TEST_STATE/plain.out" 2> "$FM_TEST_STATE/plain.err"; then
+  printf 'allowed\n' > "$FM_TEST_STATE/plain.outcome"
+else
+  printf 'refused\n' > "$FM_TEST_STATE/plain.outcome"
+fi
+SH
+  cat > "$dir/plain-session.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "$$" > "$FM_TEST_STATE/.lock"
+rm -f "$FM_TEST_STATE/.branch-eligible-owner"
+bash "$FM_TEST_DIR/plain-helper.sh"
+SH
+  env FM_TEST_STATE="$state" FM_TEST_DIR="$dir" FM_TEST_GRANT="$GRANT" \
+    bash "$dir/plain-session.sh" > "$dir/plain-session.out" 2>&1 \
+    || fail "the plain session fixture exited nonzero: $(cat "$dir/plain-session.out")"
+  lock_pid=$(tr -d '[:space:]' < "$state/.lock")
+  [ "$(cat "$state/plain.outcome" 2>/dev/null)" = allowed ] \
+    || fail "a helper below a non-harness lock owner was refused: $(cat "$state/plain.err" 2>/dev/null)"
+  [ "$(sed -n '2p' "$state/.branch-eligible-owner")" = "$(tr -d '[:space:]' < "$state/plain.pid")" ] \
+    || fail "the lineage grant recorded $(sed -n '2p' "$state/.branch-eligible-owner" 2>/dev/null), expected the granted helper pid"
+  [ "$(tr -d '[:space:]' < "$state/plain.pid")" != "$lock_pid" ] \
+    || fail "the lineage fixture collapsed the granted pid into the lock owner"
+
+  pass "wake-grant: branch owner activation requires the locked session or a lineage reaching it"
+}
+
 test_recovery_mint_and_delivery_log_avoid_sibling_subst
 test_legacy_generationless_wake_is_adopted
 test_stale_recovery_generation_cannot_touch_a_newer_episode
@@ -3411,3 +3522,4 @@ test_secondmate_liveness_tick_error_keeps_scanning_and_wakes
 test_secondmate_liveness_tick_unqueued_outcome_is_an_error_not_a_wake
 test_secondmate_liveness_tick_skips_mate_whose_lock_is_held
 test_secondmate_liveness_tick_preserves_unreachable_remote
+test_branch_owner_activation_requires_the_locked_session

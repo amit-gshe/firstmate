@@ -286,6 +286,62 @@ EOF
   fm_harness_pid_alive "$lock_pid"
 }
 
+# True when the session lock in state dir $1 authorizes pid $2 to act for this
+# home: either $2 IS the recorded lock owner, or this process itself runs
+# inside that owner's session.
+# This is the authorization entry for state-changing wake-row grant actions,
+# and bin/fm-wake-grant.sh's `activate` calls it before it installs the branch
+# owner record.
+# Naming the lock pid alone is not enough there: a background harness
+# subprocess that inherits the session's working directory and extensions can
+# pass its own pid while its ancestry still reaches the session, which is the
+# hole that let a Magic Context historian process claim wake rows its session
+# never handled.
+# The harness-anchored signal composes the ownership decision already owned by
+# fm_session_lock_owned_by_self rather than deriving harness identity a second
+# time, and the lineage signal covers a lock owner that is not a harness
+# process, where there is no harness identity to anchor on.
+fm_session_lock_authorizes_pid() {  # <state> <pid>
+  local state=$1 pid=$2 lock_pid
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  lock_pid=$(cat "$state/.lock" 2>/dev/null || true)
+  [ -n "$lock_pid" ] || return 1
+  [ "$pid" = "$lock_pid" ] && return 0
+  fm_session_lock_owned_by_self "$state" && return 0
+  fm_session_lock_owner_in_lineage "$state" "$lock_pid"
+}
+
+# True when the lock recorded in state dir $1 names a plain ancestor of this
+# process and no other harness session sits between the two.
+# A lock owner that is not itself a harness process, such as the locking shell
+# of a test fixture or a home locked by hand, leaves no harness identity to
+# anchor on, so lineage is the only evidence available; a harness process met
+# before the lock owner still means a different session's subprocess, which is
+# the Magic Context historian shape this authorization exists to refuse.
+# A non-harness helper the session itself spawned - a bash tool call, an
+# extension's grant invocation - is exactly what this signal must keep working.
+# shellcheck disable=SC2016 # $$ is the calling shell's own pid, not an expansion to defer.
+fm_session_lock_owner_in_lineage() {  # <state> [<lock-pid>]
+  local state=$1 lock_pid=${2:-} pid comm args
+  if [ -z "$lock_pid" ]; then
+    lock_pid=$(cat "$state/.lock" 2>/dev/null || true)
+  fi
+  case "$lock_pid" in ''|*[!0-9]*) return 1 ;; esac
+  # Start at this process's parent: naming the lock owner is this process's own
+  # claim, which only the exact-pid equality above may satisfy.
+  pid=$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ')
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$pid" -ge 1 ] || return 1
+    [ "$pid" = "$lock_pid" ] && return 0
+    comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 1
+    args=$(ps -o args= -p "$pid" 2>/dev/null)
+    fm_harness_process_matches "$comm" "$args" && return 1
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+  done
+  return 1
+}
+
 # True when state dir $1 records a live verified harness outside this process's
 # contiguous harness ancestry that was not recorded by this same trusted Claude
 # session. Sets FM_SESSION_LOCK_FOREIGN_OWNER_PID for a diagnostic caller.
