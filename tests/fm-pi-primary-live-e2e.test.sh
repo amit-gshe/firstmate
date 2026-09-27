@@ -269,8 +269,21 @@ cp "$ROOT/bin/fm-supervision-instructions.sh" "$PROJECT/bin/fm-supervision-instr
 chmod +x "$PROJECT/bin/fm-operational-input.sh"
 mkdir -p "$HOME_DIR/state" "$HOME_DIR/config"
 
+# The session lock must name the Pi process itself. bin/fm-lock.sh anchors line 1
+# at the innermost verified-harness pid of the locking session's ancestry, and the
+# watch extension owns only a lock that names its own process, so recording the
+# login shell's $$ - an ancestor that a nested harness child could also claim -
+# would reproduce the very ownership defect this harness regression-tests. The
+# wrapper records its own pid and then execs pi, so the recorded pid is pi's.
+cat > "$LAB/launch-pi.sh" <<'LAUNCH'
+#!/usr/bin/env bash
+printf '%s\n' "$$" > "$FM_HOME/state/.lock"
+exec pi --approve --no-session --no-context-files --no-extensions -e .pi/extensions/fm-calm.ts -e .pi/extensions/fm-primary-turnend-guard.ts -e .pi/extensions/fm-primary-pi-watch.ts --model openai-codex/gpt-5.6-sol --thinking low
+LAUNCH
+chmod +x "$LAB/launch-pi.sh"
+
 "$TMUX" -L "$SOCKET" new-session -d -s "$SESSION" -c "$PROJECT" \
-  "env FM_HOME='$HOME_DIR' FM_ROOT_OVERRIDE='$PROJECT' FM_POLL=1 FM_SIGNAL_GRACE=0 FM_HEARTBEAT=600 bash -lc 'printf \"%s\\n\" \"\$\$\" > \"\$FM_HOME/state/.lock\"; pi --approve --no-session --no-context-files --no-extensions -e .pi/extensions/fm-calm.ts -e .pi/extensions/fm-primary-turnend-guard.ts -e .pi/extensions/fm-primary-pi-watch.ts --model openai-codex/gpt-5.6-sol --thinking low; rc=\$?; printf \"PI_EXIT=%s\\n\" \"\$rc\"; sleep 300'"
+  "env FM_HOME='$HOME_DIR' FM_ROOT_OVERRIDE='$PROJECT' FM_POLL=1 FM_SIGNAL_GRACE=0 FM_HEARTBEAT=600 bash -lc '$LAB/launch-pi.sh; rc=\$?; printf \"PI_EXIT=%s\\n\" \"\$rc\"; sleep 300'"
 
 i=0
 while [ "$i" -lt 120 ]; do

@@ -2150,6 +2150,118 @@ EOF
   pass "Pi watcher arm distinguishes all session lock ownership states"
 }
 
+# A session lock names the session's own harness process, and the extension runs
+# inside that process, so a live ANCESTOR holding the lock is a different
+# session. Before this was pinned, ownership accepted any ancestor pid, so a
+# harness child that inherited this home's cwd and loaded this same extension
+# claimed ownership, published itself as the owner, and started a second arm
+# cycle; every arm passes --restart, so the two instances then tore down each
+# other's healthy watcher forever.
+test_pi_arm_refuses_live_ancestor_lock_holder() {
+  local repo home plugin log child_src out status
+  repo="$TMP_ROOT/pi-lock-ancestor-root"
+  home="$TMP_ROOT/pi-lock-ancestor-home"
+  log="$TMP_ROOT/pi-lock-ancestor.log"
+  child_src="$TMP_ROOT/pi-lock-ancestor-child.mjs"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'arm\n' >> "${FM_ARM_LOG:?}"
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  cat > "$child_src" <<'JS'
+import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+let tool = null;
+const pi = {
+  on() {},
+  registerCommand() {},
+  registerTool(candidate) {
+    if (candidate.name === "fm_watch_arm_pi") tool = candidate;
+  },
+  sendUserMessage: async () => {},
+};
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+if (!tool) throw new Error("Pi watch tool was not registered");
+const result = await tool.execute("tool-call-nested", {}, undefined, undefined, {});
+let markerPid = "";
+try {
+  markerPid = readFileSync(process.env.MARKER, "utf8").split("\n")[1] ?? "";
+} catch {}
+process.stdout.write(JSON.stringify({
+  ok: result.details?.ok,
+  message: result.details?.message,
+  pid: process.pid,
+  markerPid,
+}));
+JS
+  out=$(PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" CHILD_SRC="$child_src" \
+    MARKER="$home/state/.pi-watch-extension-loaded" node --input-type=module 2>&1 <<'EOF'
+import { existsSync, unlinkSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
+
+const READ_ONLY = "watcher: read-only - session lock is held by another firstmate session";
+const lock = `${process.env.FM_HOME}/state/.lock`;
+let tool = null;
+const pi = {
+  on() {},
+  registerCommand() {},
+  registerTool(candidate) {
+    if (candidate.name === "fm_watch_arm_pi") tool = candidate;
+  },
+  sendUserMessage: async () => {},
+};
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+if (!tool) throw new Error("Pi watch tool was not registered");
+
+// A live ancestor holding the lock is a different session, never this one.
+writeFileSync(lock, `${process.ppid}\n`);
+const ancestor = await tool.execute("tool-call-ancestor", {}, undefined, undefined, {});
+if (ancestor.details?.ok !== false) {
+  throw new Error(`a live ancestor holder unexpectedly armed: ${JSON.stringify(ancestor.details)}`);
+}
+if (ancestor.details.message !== READ_ONLY) {
+  throw new Error(`unexpected live-ancestor response: ${ancestor.details.message}`);
+}
+if (existsSync(process.env.FM_ARM_LOG)) throw new Error("arm ran for a live ancestor holder");
+
+// The reported shape: a harness child that inherited this home's cwd and so
+// loaded this same extension must not inherit its parent's ownership, and must
+// not publish itself as the owner. Clear the owner marker first so only the
+// child could name itself.
+if (existsSync(process.env.MARKER)) unlinkSync(process.env.MARKER);
+writeFileSync(lock, `${process.pid}\n`);
+const child = spawn(process.execPath, [process.env.CHILD_SRC], { env: process.env, stdio: ["ignore", "pipe", "inherit"] });
+let childOut = "";
+child.stdout.on("data", (chunk) => {
+  childOut += chunk;
+});
+const childExit = await new Promise((resolve) => child.on("close", resolve));
+if (childExit !== 0) throw new Error(`nested host exited ${childExit}: ${childOut}`);
+let nested;
+try {
+  nested = JSON.parse(childOut);
+} catch {
+  throw new Error(`nested host printed unparseable output: ${childOut}`);
+}
+if (nested.ok !== false) throw new Error(`nested host unexpectedly armed: ${childOut}`);
+if (nested.message !== READ_ONLY) throw new Error(`unexpected nested host response: ${childOut}`);
+if (existsSync(process.env.MARKER)) throw new Error(`nested host published itself as owner: ${childOut}`);
+if (existsSync(process.env.FM_ARM_LOG)) throw new Error("arm ran for the nested host");
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "Pi watcher arm must refuse a live ancestor holder and a nested extension host"
+  [ -z "$out" ] || fail "Pi live-ancestor lock test printed output: $out"
+  pass "Pi watcher arm refuses a live ancestor holder and a nested extension host"
+}
+
 test_pi_session_transition_generation_owner() {
   local repo home plugin child_pid_file child_marker_file marker_root arm_log fail_once out status
   repo="$TMP_ROOT/pi-session-transition-root"
@@ -4418,6 +4530,7 @@ test_pi_empty_close_retries_instead_of_disappearing
 test_pi_established_empty_close_honors_retry_limit
 test_pi_actionable_close_rechecks_session_lock
 test_pi_arm_distinguishes_session_lock_ownership
+test_pi_arm_refuses_live_ancestor_lock_holder
 test_pi_session_transition_generation_owner
 test_pi_session_replacement_carries_inflight_actionable_close
 test_pi_streaming_followup_is_replayed_after_replacement

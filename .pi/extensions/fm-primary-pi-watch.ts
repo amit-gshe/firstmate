@@ -213,12 +213,6 @@ function positiveInteger(name: string, fallback: number): number {
   return Math.floor(value);
 }
 
-function parentPid(pid: string): string {
-  const result = spawnSync("ps", ["-o", "ppid=", "-p", pid], { encoding: "utf8" });
-  if (result.status !== 0) return "";
-  return result.stdout.trim();
-}
-
 function pidAlive(pid: string): boolean {
   try {
     process.kill(Number(pid), 0);
@@ -236,12 +230,19 @@ function lockOwnership(): LockOwnership {
     return "missing";
   }
   if (!/^[0-9]+$/.test(lockPid) || lockPid === "1") return "other";
-  let pid = String(process.pid);
-  for (let i = 0; i < 8; i += 1) {
-    if (pid === lockPid) return "owned";
-    pid = parentPid(pid);
-    if (!pid || pid === "1") break;
-  }
+  if (lockPid === String(process.pid)) return "owned";
+  // Only this exact process can own the lock. bin/fm-lock.sh anchors line 1 at
+  // the innermost verified-harness pid of the locking session's ancestry - for a
+  // Pi primary that is this process, whether Pi was launched plainly or through
+  // a pi-signed wrapper whose own pid above it is not the owner. An ancestor
+  // naming the lock is therefore a different harness above this one that
+  // inherited this home's working directory and loaded this same extension, as
+  // Magic Context's `pi` historian subagent does: accepting it let that child
+  // publish the owner marker and start a second arm cycle, and since every arm
+  // passes --restart the two instances then tore down each other's healthy
+  // watcher in a self-sustaining restart loop. A lock held by a live process
+  // other than this one is refused, and a dead one is reclaimed through the
+  // ordinary stale-owner path.
   return pidAlive(lockPid) ? "other" : "missing";
 }
 
