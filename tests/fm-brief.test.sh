@@ -1037,7 +1037,9 @@ test_worker_role_scope() {
     brief="$home/data/$kind/brief.md"
     assert_no_grep '# Current worker role contract' "$brief" "$kind scaffolded a second owner of the role scope fm-spawn.sh delivers"
     assert_grep 'the only paths this task authorizes under a firstmate home' "$brief" "$kind scaffold dropped the worker home-path boundary"
-    assert_grep 'do not retry it in another form and do not work around the guard' "$brief" "$kind scaffold dropped the protected-directory refusal guidance"
+    # shellcheck disable=SC2016 # the rendered rule keeps $HOME literal in the brief.
+    assert_grep 'Never aim a command at `~`, `$HOME`, `/`, or the home directory itself' "$brief" "$kind scaffold dropped the broad-target rule a guard refuses"
+    assert_grep 'do not wait for it to be allowed and do not work around it' "$brief" "$kind scaffold dropped the protected-directory refusal guidance"
     assert_grep 'the only paths you may touch outside it are' "$brief" "$kind scaffold left its worktree isolation rule contradicting the status protocol"
     if [ "$kind" = scout ]; then
       assert_grep 'the report, your status file, and your steering inbox' "$brief" "scout scaffold lost the report carve-out in its worktree isolation rule"

@@ -350,13 +350,16 @@ INBOX_DIR=$(shell_quote "$STATE/$ID.inbox")
 # A worker's status recipe names absolute paths under the supervising home and its
 # optional fleet-ledger branch names firstmate's own script, so a diligent worker can
 # start scanning that home to understand firstmate's bookkeeping and land on the
-# protected-directory guard. This note keeps it on its own task paths instead.
+# protected-directory guard. This note keeps it on its own task paths instead, and
+# names the broad command targets a guard refuses so a blocked worker reaches for
+# the concrete path it needs rather than waiting for an answer or working around it.
 # Secondmate charters own their home and must never carry it.
 IFS= read -r -d '' STATUS_SCOPE_NOTE <<'EOF' || true
    Outside your worktree, the only paths this task authorizes under a firstmate home are the exact task paths this brief names for you: your status file above, your own steering inbox below, and any report path it gives you.
    Run that status command exactly as written: it is complete, and its `fleet-ledger` branch is firstmate's own bookkeeping that you never need to open, read, or look up.
    Never scan, list, search, or read any other path under a firstmate home, never hunt for a `*.status` file, and never rewrite the status path relative to your worktree.
-   If a protected-directory guard blocks a command, do not retry it in another form and do not work around the guard: that block means you aimed at such a path, so drop it and continue your assigned task.
+   Never aim a command at `~`, `$HOME`, `/`, or the home directory itself; name the concrete path you actually need, because a guard refuses those broad targets.
+   If a guard refuses a command, do not wait for it to be allowed and do not work around it: name the concrete path if you genuinely need one, and otherwise drop it and continue your assigned task.
 EOF
 STATUS_SCOPE_NOTE=${STATUS_SCOPE_NOTE%$'\n'}
 

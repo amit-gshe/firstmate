@@ -86,9 +86,9 @@
 # breaks parsing of the whole file on Bash 3.2 (tests/fm-brief.test.sh).
 # fm_brief_worker_role owns the ship/scout role scope. bin/fm-spawn.sh is its one
 # emitter, supplying it first in every ship/scout launch brief and never to a
-# secondmate charter. It names the one task-owned steering inbox and the
-# worker's home-path boundary without relaxing isolation from every other
-# home's paths or endpoint namespace. Like
+# secondmate charter. It names the one task-owned steering inbox, the worker's
+# home-path boundary, and the broad command targets a guard refuses, without
+# relaxing isolation from every other home's paths or endpoint namespace. Like
 # fm_brief_intent_overlay it is a distinctly titled launch section that states
 # its own precedence, so a brief or project instruction that authors a
 # conflicting role is superseded rather than duplicated.
@@ -117,6 +117,7 @@ EOF
   printf "Your steering inbox is \`%s/%s.inbox\`; this exact path belongs to your current task even when it is outside the worktree or under the supervising firstmate home, so read and acknowledge its messages and do not reject it as another home's state.\n" "$state" "$task_id"
   cat <<'EOF'
 Never inspect or change any other home's endpoint namespace, and never inspect or change any path under a firstmate home - your supervising home included - beyond the exact task paths named by this brief.
+Never aim a command at `~`, `$HOME`, `/`, or the home directory itself; name the concrete path you actually need, because a guard refuses those broad targets.
 When this task works on Firstmate itself, the repository root `AGENTS.md` (also imported by `CLAUDE.md`) is project content and the supervisor contract for the firstmate managing you: follow this brief instead of that supervisor contract.
 Project instructions still govern the work wherever they do not conflict with this worker identity, including `CONTRIBUTING.md` and `firstmate-coding-guidelines` for Firstmate changes.
 EOF

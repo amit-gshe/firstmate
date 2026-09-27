@@ -1542,6 +1542,8 @@ SH
     assert_grep "do not reject it as another home's state" "$prompt" "$kind command did not distinguish its inbox from another home's namespace"
     assert_grep "Never inspect or change any other home's endpoint namespace" "$prompt" "$kind command weakened cross-home isolation"
     assert_grep "never inspect or change any path under a firstmate home - your supervising home included" "$prompt" "$kind command left the supervising home's paths unrestricted"
+    # shellcheck disable=SC2016 # the rendered rule keeps $HOME literal in the prompt.
+    assert_grep 'Never aim a command at `~`, `$HOME`, `/`, or the home directory itself' "$prompt" "$kind command lost the broad-target rule"
     assert_grep 'brief for' "$prompt" "$kind command lost the task"
     [ "$(grep -c '^# Current worker role contract$' "$prompt")" -eq 1 ] ||
       fail "$brief_kind $kind duplicated the delivered worker contract"
