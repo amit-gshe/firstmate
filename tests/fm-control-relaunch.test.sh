@@ -2385,6 +2385,293 @@ test_relaunch_moves_a_drifted_item_back_in_flight() {
   pass "relaunch heals an item that drifted out of In flight while the task stayed live"
 }
 
+
+# --- 8. an environment restart that hands over the task's own pane -----------
+#
+# An environment restart can give a task's recorded terminal address to the
+# supervising session itself, so the record's window and herdr_* fields name the
+# pane firstmate runs in. Every lifecycle key aimed at that address would drive
+# firstmate, and both recovery paths refused: fm-control.sh's relaunch stopped on
+# its composer gate, and fm-spawn.sh --relaunch stopped because the endpoint
+# plainly read `alive`. Nothing could reclaim the task without a human repointing
+# the record by hand. Pane IDENTITY is the decisive signal - the record names the
+# same herdr session and pane id as the calling session's own HERDR_PANE_ID.
+
+# run_control_in_pane / run_spawn_in_pane: the same invocation as run_control and
+# run_spawn, but the caller is firstmate itself inside a named herdr pane, which
+# is the environment a restart leaves behind. FM_SPAWN_NO_GUARD stays armed so
+# these cases exercise endpoint identity alone.
+run_control_in_pane() {  # <case-dir> <herdr-session> <pane> <args...>
+  local dir=$1 ses=$2 pane=$3; shift 3
+  mkdir -p "$dir/user-home"
+  env -u HERDR_SOCKET_PATH -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID \
+    HERDR_ENV=1 HERDR_SESSION="$ses" HERDR_PANE_ID="$pane" \
+    PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_DIR="$dir/fake" \
+    HOME="$dir/user-home" CLAUDE_CONFIG_DIR='' \
+    FM_SPAWN_NO_GUARD=1 GROK_HOME="$dir/grokhome" \
+    FM_CONTROL_POLL=0.01 FM_CONTROL_EXIT_WAIT=0.05 FM_CONTROL_LAUNCH_WAIT=0.05 \
+    "$CONTROL" "$@" 2>&1
+}
+
+run_spawn_in_pane() {  # <case-dir> <herdr-session> <pane> <args...>
+  local dir=$1 ses=$2 pane=$3; shift 3
+  mkdir -p "$dir/user-home"
+  env -u HERDR_SOCKET_PATH -u HERDR_TAB_ID -u HERDR_WORKSPACE_ID \
+    HERDR_ENV=1 HERDR_SESSION="$ses" HERDR_PANE_ID="$pane" \
+    PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_DIR="$dir/fake" \
+    HOME="$dir/user-home" CLAUDE_CONFIG_DIR='' \
+    FM_SPAWN_NO_GUARD=1 GROK_HOME="$dir/grokhome" \
+    "$SPAWN" "$@" 2>&1
+}
+
+# self_pane_meta <path> <window> <session> <pane> [backend]
+self_pane_meta() {
+  local path=$1 window=$2 ses=$3 pane=$4 backend=${5-herdr}
+  {
+    printf 'window=%s\n' "$window"
+    printf 'endpoint_task_id=sp0\n'
+    printf 'backend=%s\n' "$backend"
+    printf 'herdr_session=%s\n' "$ses"
+    printf 'herdr_pane_id=%s\n' "$pane"
+  } > "$path"
+}
+
+# self_pane_predicate_rc <meta-file> -> 0|1
+self_pane_predicate_rc() {
+  if ! declare -F fm_backend_recorded_endpoint_is_self_pane >/dev/null 2>&1; then
+    # shellcheck source=/dev/null
+    . "$ROOT/bin/fm-backend.sh"
+  fi
+  if fm_backend_recorded_endpoint_is_self_pane "$1"; then printf '0'; else printf '1'; fi
+}
+
+test_self_pane_identity_is_matched_only_by_the_exact_pane() {
+  local dir meta
+  dir=$(new_case selfpane-predicate sp0)
+  mkdir -p "$dir/home/state"
+  meta="$dir/home/state/sp0.meta"
+
+  HERDR_SESSION=fmlab HERDR_PANE_ID='%7'
+  export HERDR_SESSION HERDR_PANE_ID
+  self_pane_meta "$meta" 'fmlab:%7' fmlab '%7'
+  [ "$(self_pane_predicate_rc "$meta")" = 0 ] \
+    || fail "the caller's own session and pane must be recognized as this seat"
+
+  self_pane_meta "$meta" 'fmlab:%8' fmlab '%8'
+  [ "$(self_pane_predicate_rc "$meta")" = 1 ] \
+    || fail "a sibling pane in the same session is a different seat"
+
+  self_pane_meta "$meta" 'fmlab:%7' fmlab '%7'
+  HERDR_SESSION=other
+  [ "$(self_pane_predicate_rc "$meta")" = 1 ] \
+    || fail "the same per-session pane id under another session is a different pane"
+  HERDR_SESSION=fmlab
+
+  HERDR_PANE_ID=
+  [ "$(self_pane_predicate_rc "$meta")" = 1 ] \
+    || fail "a caller with no pane identity must never match a record"
+  HERDR_PANE_ID='%7'
+
+  self_pane_meta "$meta" 'fmlab:%7' fmlab '%7' tmux
+  [ "$(self_pane_predicate_rc "$meta")" = 1 ] \
+    || fail "a tmux record is never matched by a herdr pane id"
+  self_pane_meta "$meta" 'fmlab:%7' fmlab '%7' ''
+  [ "$(self_pane_predicate_rc "$meta")" = 1 ] \
+    || fail "a backend-less record defaults to tmux and must never match"
+
+  # A duplicated identity field is ambiguous, so the read refuses rather than
+  # silently taking one copy - which is what a last-match read would have done.
+  self_pane_meta "$meta" 'fmlab:%7' fmlab '%7'
+  printf 'herdr_session=fmlab\nherdr_pane_id=%%7\n' >> "$meta"
+  [ "$(self_pane_predicate_rc "$meta")" = 1 ] \
+    || fail "an ambiguous duplicated identity field must refuse rather than match"
+
+  printf 'window=fmlab:%%7\nbackend=herdr\nherdr_session=fmlab\n' > "$meta"
+  [ "$(self_pane_predicate_rc "$meta")" = 1 ] \
+    || fail "a record with no pane identity cannot match"
+  pass "self-pane identity: matched only by the caller's own session and pane id"
+}
+
+test_meta_rewrite_is_atomic_and_refuses_bad_keys() {
+  local dir meta before expected
+  dir=$(new_case selfpane-rewrite sp1)
+  meta="$dir/home/state/sp1.meta"
+  # shellcheck source=/dev/null
+  . "$ROOT/bin/fm-backend.sh"
+
+  printf 'window=fmlab:%%7\nbackend=herdr\nherdr_session=fmlab\nherdr_pane_id=%%7\nworktree=/w\n' > "$meta"
+  fm_backend_meta_rewrite_fields "$meta" "window=fmlab:%9" "herdr_pane_id=%9" \
+    || fail "replacing existing fields must succeed"
+  expected=$(printf 'window=fmlab:%%9\nbackend=herdr\nherdr_session=fmlab\nherdr_pane_id=%%9\nworktree=/w')
+  [ "$(cat "$meta")" = "$expected" ] \
+    || fail "the rewrite must replace only the named fields and preserve every other line"
+
+  before=$(cat "$meta")
+  if fm_backend_meta_rewrite_fields "$meta" "herdr_tab_id=tabnew" 2>/dev/null; then
+    fail "an absent key must refuse rather than silently adding a second copy"
+  fi
+  [ "$(cat "$meta")" = "$before" ] || fail "a refused rewrite must leave the record untouched"
+
+  printf 'herdr_pane_id=%%9\n' >> "$meta"
+  before=$(cat "$meta")
+  if fm_backend_meta_rewrite_fields "$meta" "herdr_pane_id=%8" 2>/dev/null; then
+    fail "a duplicated key must refuse rather than picking one copy"
+  fi
+  [ "$(cat "$meta")" = "$before" ] || fail "a refused rewrite must leave the record untouched"
+
+  [ -z "$(find "$dir/home/state" -name '*.rewrite.*' -print -quit)" ] \
+    || fail "a rewrite must not leave a temporary file behind"
+  pass "meta rewrite: atomic, field-scoped, and refusing on absent or ambiguous keys"
+}
+
+test_self_pane_control_denies_a_key_and_relaunch_recovers() {
+  local dir out rc=0 log before
+  herdr_case_or_skip selfpane-deny rl90 || {
+    echo "skip - herdr self-pane control needs jq (the herdr adapter parses JSON with it)"
+    return 0
+  }
+  dir=$HERDR_CASE_DIR
+  rm -f "$dir/fake/herdr-stopped" "$dir/fake/herdr-agent-live"
+  before=$(cat "$dir/home/state/rl90.meta")
+
+  out=$(run_control_in_pane "$dir" fmlab '%7' rl90 interrupt); rc=$?
+  expect_code 1 "$rc" "interrupt must refuse to aim at firstmate's own pane"$'\n'"$out"
+  assert_contains "$out" "this session's own pane" \
+    "the refusal must name the handed-over pane identity"
+  assert_contains "$out" "relaunch" \
+    "the refusal must name the recovery verb that can reclaim the task"
+  assert_not_contains "$out" "composer" \
+    "the identity guard must fire before any composer read"
+
+  out=$(run_control_in_pane "$dir" fmlab '%7' rl90 exit); rc=$?
+  expect_code 1 "$rc" "exit must refuse to aim at firstmate's own pane"$'\n'"$out"
+  assert_not_contains "$out" "composer" \
+    "the identity guard must fire before any composer read"
+
+  log=$(cat "$dir/fake/herdr-log")
+  assert_not_contains "$log" "pane send-text" \
+    "no lifecycle key may ever be typed into firstmate's own pane"
+  [ "$(cat "$dir/home/state/rl90.meta")" = "$before" ] \
+    || fail "a refused self-pane control must not touch the task record"
+  assert_absent "$dir/fake/herdr-created-tabs" "a refusal must not create an endpoint"
+
+  # The recorded worktree is untouched by the refusal as well.
+  out=$(run_control_in_pane "$dir" fmlab '%7' rl90 relaunch --note "recovering the task"); rc=$?
+  expect_code 0 "$rc" "relaunch must reclaim the task from firstmate's own pane"$'\n'"$out"
+  log=$(cat "$dir/fake/herdr-log")
+  assert_contains "$log" "tab create" \
+    "the recovery must open a fresh endpoint rather than typing into firstmate"
+  assert_not_contains "$log" "pane send-text %7 " \
+    "no key may be typed into the pane firstmate is running in"
+  [ "$(meta_field "$dir" rl90 window)" = "fmlab:%9" ] \
+    || fail "the record must be repointed at the fresh endpoint, not the handed-over pane"
+  [ "$(meta_field "$dir" rl90 herdr_pane_id)" = "%9" ] \
+    || fail "the record's pane id must name the fresh endpoint"
+  [ "$(meta_field "$dir" rl90 herdr_session)" = "fmlab" ] \
+    || fail "the recovery must stay in the recorded session"
+  [ "$(meta_field "$dir" rl90 herdr_workspace_id)" = "ws1" ] \
+    || fail "the recovery must stay in the recorded workspace"
+  [ "$(meta_field "$dir" rl90 worktree)" = "$dir/wt" ] \
+    || fail "the recovery must keep the recorded worktree"
+  assert_contains "$(cat "$dir/fake/launched-command")" "Firstmate operational input waiting" \
+    "the reclaimed task must be relaunched onto the fresh endpoint"
+  pass "self-pane control: a lifecycle key is refused and relaunch reclaims the task"
+}
+
+# repoint_record_to_pane <case-dir> <id> <session> <pane>: model a record whose
+# endpoint is a pane that is NOT the calling session's own. add_herdr_ship_task
+# always records `<session>:%7`, which is exactly the handed-over shape, so a
+# foreign-endpoint case rewrites the identity fields rather than appending a
+# second copy (which the exact-value reads would refuse as ambiguous).
+repoint_record_to_pane() {
+  local dir=$1 id=$2 ses=$3 pane=$4
+  sed -i "s|^window=.*|window=$ses:$pane|; s|^herdr_pane_id=.*|herdr_pane_id=$pane|" \
+    "$dir/home/state/$id.meta"
+}
+
+test_foreign_dead_endpoint_is_never_rebound_by_control() {
+  local dir out rc=0 log
+  herdr_case_or_skip foreign-dead rl92 fmlab '%3' || {
+    echo "skip - herdr endpoint identity needs jq (the herdr adapter parses JSON with it)"
+    return 0
+  }
+  dir=$HERDR_CASE_DIR
+  repoint_record_to_pane "$dir" rl92 fmlab '%3'
+  rm -f "$dir/fake/herdr-stopped" "$dir/fake/herdr-agent-live"
+
+  out=$(run_control_in_pane "$dir" fmlab '%7' rl92 relaunch --note "recovering the task"); rc=$?
+  expect_code 0 "$rc" "a sibling pane's dead endpoint is an ordinary relaunch"$'\n'"$out"
+  assert_not_contains "$out" "this session's own pane" \
+    "a sibling pane is never mistaken for the calling session's own"
+  log=$(cat "$dir/fake/herdr-log")
+  assert_not_contains "$log" "tab create" \
+    "a foreign endpoint must never be rebound onto a fresh one"
+  [ "$(meta_field "$dir" rl92 window)" = "fmlab:%3" ] \
+    || fail "an ordinary relaunch must keep the recorded endpoint"
+  pass "endpoint identity: a foreign endpoint is relaunched in place, never rebound"
+}
+
+test_foreign_live_endpoint_is_never_adopted_by_spawn() {
+  local dir out rc=0 log before
+  herdr_case_or_skip foreign-live rl93 fmlab '%3' || {
+    echo "skip - herdr endpoint identity needs jq (the herdr adapter parses JSON with it)"
+    return 0
+  }
+  dir=$HERDR_CASE_DIR
+  repoint_record_to_pane "$dir" rl93 fmlab '%3'
+  rm -f "$dir/fake/herdr-stopped"
+  : > "$dir/fake/herdr-agent-live"
+  before=$(cat "$dir/home/state/rl93.meta")
+
+  out=$(run_spawn_in_pane "$dir" fmlab '%7' rl93 --relaunch --harness claude); rc=$?
+  expect_code 1 "$rc" "a live foreign agent must not be adopted"$'\n'"$out"
+  assert_not_contains "$out" "this session's own pane" \
+    "a live foreign agent is refused for being alive, not for being this seat"
+  log=$(cat "$dir/fake/herdr-log")
+  assert_not_contains "$log" "tab create" \
+    "a live foreign endpoint must never be rebound onto a fresh one"
+  [ "$(cat "$dir/home/state/rl93.meta")" = "$before" ] \
+    || fail "a refused adoption must leave the task record untouched"
+  pass "endpoint identity: a live foreign agent is refused, never adopted or rebound"
+}
+
+test_self_pane_rebind_preserves_the_recorded_worktree_and_uncommitted_work() {
+  local dir out rc=0 head_before
+  herdr_case_or_skip selfpane-preserve rl94 || {
+    echo "skip - herdr self-pane recovery needs jq (the herdr adapter parses JSON with it)"
+    return 0
+  }
+  dir=$HERDR_CASE_DIR
+  rm -f "$dir/fake/herdr-stopped" "$dir/fake/herdr-agent-live"
+  printf 'landed on the branch\n' > "$dir/wt/committed.txt"
+  git -C "$dir/wt" add committed.txt
+  git -C "$dir/wt" -c user.email=t@example.com -c user.name=t commit -qm "work in progress"
+  head_before=$(git -C "$dir/wt" rev-parse HEAD)
+  printf 'never committed\n' > "$dir/wt/dirty.txt"
+
+  out=$(run_control_in_pane "$dir" fmlab '%7' rl94 relaunch --note "the record was handed to this seat")
+  rc=$?
+  expect_code 0 "$rc" "a self-pane record must be reclaimed onto a fresh endpoint"$'\n'"$out"
+
+  # The rebind moves the ENDPOINT and nothing else. The unlanded work the
+  # previous agent left in the recorded worktree - committed and not - must come
+  # through it exactly as the ordinary reclaim leaves it.
+  [ "$(git -C "$dir/wt" rev-parse HEAD)" = "$head_before" ] \
+    || fail "the rebind moved the worktree's HEAD"
+  [ "$(git -C "$dir/wt" rev-parse --abbrev-ref HEAD)" = "task-rl94" ] \
+    || fail "the rebind changed the worktree's branch"
+  assert_contains "$(cat "$dir/wt/dirty.txt")" "never committed" \
+    "the rebind destroyed or rewrote an uncommitted change"
+  assert_present "$dir/wt/committed.txt" "the rebind destroyed committed work"
+  [ -z "$(git -C "$dir/wt" status --porcelain -- committed.txt)" ] \
+    || fail "the rebind dirtied work that had been committed"
+  [ "$(meta_field "$dir" rl94 worktree)" = "$dir/wt" ] \
+    || fail "the rebind must keep the recorded worktree"
+  [ "$(meta_field "$dir" rl94 window)" = "fmlab:%9" ] \
+    || fail "the rebind must point the record at the fresh endpoint"
+  pass "self-pane recovery: the rebind preserves the recorded worktree and its uncommitted work"
+}
+
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_relaunch_refuses_before_exit_when_the_composer_holds_pending_text
 test_relaunch_refuses_before_exit_when_the_composer_state_is_unproven
@@ -2457,3 +2744,13 @@ test_herdr_reclaim_of_a_secondmate_names_its_own_owner
 test_herdr_rebind_failure_from_a_plain_shell_names_the_real_cause
 test_relaunch_reverifies_an_already_in_flight_item_instead_of_rewriting_it
 test_relaunch_moves_a_drifted_item_back_in_flight
+
+# The environment-restart handover: the recorded endpoint is the pane firstmate
+# itself runs in, so every lifecycle key and the launch itself would drive the
+# supervisor instead of the task.
+test_self_pane_identity_is_matched_only_by_the_exact_pane
+test_meta_rewrite_is_atomic_and_refuses_bad_keys
+test_self_pane_control_denies_a_key_and_relaunch_recovers
+test_foreign_dead_endpoint_is_never_rebound_by_control
+test_foreign_live_endpoint_is_never_adopted_by_spawn
+test_self_pane_rebind_preserves_the_recorded_worktree_and_uncommitted_work

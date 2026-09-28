@@ -354,6 +354,29 @@ fm_control_harness_supported "$HARNESS" \
 
 fm_backend_validate "$BACKEND" || exit 1
 
+# --- self-pane endpoint guard -----------------------------------------------
+#
+# An environment restart can hand THIS task's recorded terminal address to the
+# calling session itself, so window= and the herdr_* fields name the pane
+# firstmate is running in rather than the task's. Every lifecycle verb would
+# then drive firstmate instead of the task: interrupt and exit would type a key
+# here, and relaunch is refused both by this file's composer gate and by the
+# launch-side proof that the recorded endpoint is not alive. Deny before any
+# composer read or keystroke, and recover 'relaunch' by rebinding the record to
+# a fresh agent-free endpoint in the task's own recorded workspace, which the
+# launch below then adopts through its ordinary dead-endpoint path.
+if fm_backend_recorded_endpoint_is_self_pane "$META"; then
+  if [ "$VERB" = relaunch ]; then
+    fm_backend_rebind_self_pane_endpoint "$META" "$ID" >/dev/null \
+      || die "task $ID's recorded endpoint is this session's own pane (an environment restart handed it over), and no replacement endpoint could be created; the record is unchanged, so reconcile it before retrying '$VERB'"
+    fm_backend_validate_task_endpoint "$META" "$ID" || exit 1
+    BACKEND=$FM_BACKEND_VALIDATED_BACKEND
+    T=$FM_BACKEND_VALIDATED_TARGET
+  else
+    die "task $ID's recorded endpoint is this session's own pane (an environment restart handed it over); refusing to send a lifecycle key into firstmate itself. Recover the task with 'fm-control $ID relaunch'"
+  fi
+fi
+
 # --- shared helpers ---------------------------------------------------------
 
 agent_state() {

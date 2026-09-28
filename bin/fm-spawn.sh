@@ -1700,6 +1700,16 @@ if [ "$RELAUNCH" -eq 1 ]; then
   fm_backend_validate_task_endpoint "$RELAUNCH_META" "$ID" || exit 1
   BACKEND=$FM_BACKEND_VALIDATED_BACKEND
   RELAUNCH_TARGET=$FM_BACKEND_VALIDATED_TARGET
+  # A recorded endpoint that is the CALLING session's own pane is never this
+  # task's own agent: an environment restart can hand the record this session's
+  # address, and adopting it would launch an agent into firstmate itself. Refuse
+  # here as well as in fm-control, so no direct entrypoint can reach the self
+  # pane even when the endpoint reads dead. fm-control's relaunch rebinds the
+  # record first and so never arrives here with a self-pane record.
+  if fm_backend_recorded_endpoint_is_self_pane "$RELAUNCH_META"; then
+    echo "error: task $ID's recorded endpoint $RELAUNCH_TARGET is this session's own pane; refusing to launch an agent into firstmate itself (recover it with 'bin/fm-control.sh $ID relaunch', which rebinds it to a fresh endpoint)" >&2
+    exit 1
+  fi
   fm_backend_validate_spawn "$BACKEND" || exit 1
   fm_backend_source "$BACKEND" || exit 1
   # A relaunch must PROVE the previous agent is gone before it launches another

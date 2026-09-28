@@ -2548,6 +2548,37 @@ EOF
   printf '%s %s' "$tab_id" "$pane_id"
 }
 
+# fm_backend_herdr_create_recovery_tab: create ONE fresh, agent-free tab in an
+# existing workspace and print "<tab_id> <pane_id>".
+# This is the raw single-tab create that endpoint recovery needs, deliberately
+# WITHOUT the duplicate-label classification fm_backend_herdr_create_task
+# performs: recovery runs exactly when a task's recorded endpoint has been
+# recycled onto the CALLING session's own pane, and a live tab that happens to
+# share the label must never block giving the task a fresh endpoint.
+# The tab carries no agent; the ordinary relaunch adopts it. --no-focus keeps
+# the caller's active tab untouched. Returns 1 when the create fails or its
+# response cannot be parsed.
+fm_backend_herdr_create_recovery_tab() {  # <container> <label> <cwd>
+  local container=$1 label=$2 cwd=$3 session wsid out tab_id pane_id
+  session=${container%%:*}
+  wsid=${container#*:}
+  if [ -z "$session" ] || [ -z "$wsid" ] || [ "$wsid" = "$container" ]; then
+    echo "error: herdr recovery tab needs a <session>:<workspace> container, got '$container'" >&2
+    return 1
+  fi
+  out=$(fm_backend_herdr_cli "$session" tab create --workspace "$wsid" --cwd "$cwd" --label "$label" --no-focus 2>/dev/null) || {
+    echo "error: herdr tab create failed for '$label' in workspace $wsid (session $session)" >&2
+    return 1
+  }
+  tab_id=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
+  pane_id=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
+  if [ -z "$tab_id" ] || [ -z "$pane_id" ]; then
+    echo "error: could not parse tab/pane id from herdr tab create output for '$label'" >&2
+    return 1
+  fi
+  printf '%s %s' "$tab_id" "$pane_id"
+}
+
 # fm_backend_herdr_projection_create_task: create one disposable presentation
 # workspace and its normal fm-<id> task tab without looking up, adopting, or
 # reusing any existing workspace.

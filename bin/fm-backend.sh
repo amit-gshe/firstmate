@@ -379,6 +379,47 @@ fm_backend_meta_exact_value() {  # <meta-file> <key>
   printf '%s' "$value"
 }
 
+# fm_backend_meta_rewrite_fields: atomically replace one or more `<key>=<value>`
+# fields of a task record in a single pass, preserving every other line
+# byte-for-byte. Each key must already appear EXACTLY once: a key that is absent
+# or duplicated refuses and leaves the record untouched, because a silent second
+# copy would later win fm_meta_get's last-match read. The rewrite lands through a
+# rename, so a concurrent reader sees the old record or the new one, never a
+# half-written file.
+fm_backend_meta_rewrite_fields() {  # <meta-file> <key=value>...
+  local meta=$1 tmp spec
+  shift
+  [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
+  tmp="$meta.rewrite.$$"
+  spec=$(printf '%s\n' "$@")
+  awk -v spec="$spec" '
+    BEGIN {
+      n = split(spec, pairs, "\n")
+      for (i = 1; i <= n; i++) {
+        if (pairs[i] == "") continue
+        eq = index(pairs[i], "=")
+        key = substr(pairs[i], 1, eq - 1)
+        want[key] = substr(pairs[i], eq + 1)
+        hit[key] = 0
+      }
+    }
+    {
+      eq = index($0, "=")
+      key = (eq > 0) ? substr($0, 1, eq - 1) : ""
+      if (key != "" && key in want) {
+        print key "=" want[key]
+        hit[key]++
+        next
+      }
+      print
+    }
+    END {
+      for (k in want) if (hit[k] != 1) exit 1
+    }
+  ' "$meta" > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$meta"
+}
+
 fm_backend_endpoint_atom_valid() {  # <value>
   case "$1" in
     ''|*[!A-Za-z0-9._@%+-]*) return 1 ;;
@@ -550,6 +591,82 @@ fm_backend_validate_task_endpoint() {  # <meta-file> <task-id>
   # shellcheck disable=SC2034 # Output globals are consumed by sourcing callers.
   FM_BACKEND_VALIDATED_TARGET=$window
   return 0
+}
+
+# fm_backend_recorded_endpoint_is_self_pane: decisive proof that a task's
+# recorded endpoint is the CALLING session's own pane. An environment restart
+# can hand a task's recorded terminal address to the supervising session, so
+# `window=` and the herdr_* fields name the pane firstmate is running in, and
+# every lifecycle key aimed at that address would drive firstmate instead of the
+# task. The proof is pane IDENTITY, not liveness: the record names the SAME
+# herdr session and the SAME pane id as the calling process's own injected
+# HERDR_PANE_ID. Only herdr injects a pane id, so a record on any other backend
+# (fm_backend_of_meta defaults a backend-less record to tmux), or a caller with
+# no HERDR_PANE_ID, can never match, and a different session that reuses the
+# same per-session pane id is a different pane and does not match either. Pure
+# and read-only: it starts nothing and sends nothing, so it is safe to call
+# before any composer read or keystroke. This is the single owner of that
+# identity test; any other caller must reuse it rather than re-deriving it.
+fm_backend_recorded_endpoint_is_self_pane() {  # <meta-file>
+  local meta=$1 backend recorded_session pane
+  [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
+  [ -n "${HERDR_PANE_ID:-}" ] || return 1
+  backend=$(fm_backend_of_meta "$meta")
+  [ "$backend" = herdr ] || return 1
+  recorded_session=$(fm_backend_meta_exact_value "$meta" herdr_session) || return 1
+  pane=$(fm_backend_meta_exact_value "$meta" herdr_pane_id) || return 1
+  [ "$recorded_session" = "${HERDR_SESSION:-default}" ] || return 1
+  [ "$pane" = "$HERDR_PANE_ID" ]
+}
+
+# fm_backend_rebind_self_pane_endpoint: move a task record off the CALLING
+# session's own pane, the recovery for the stranding shape detected by
+# fm_backend_recorded_endpoint_is_self_pane. It creates a fresh, agent-free
+# endpoint in the task's own recorded workspace and session, repoints the
+# record's endpoint fields at it in one atomic rewrite, and prints the new
+# `<session>:<pane>` so the caller can reload the record. It never sends a key
+# anywhere and never removes the endpoint it moves off, because that endpoint
+# belongs to the calling session. It touches no worktree, branch, commit, or
+# unlanded change. On any failure it prints one REFUSED line and returns 1, and
+# the record is left untouched whenever no fresh endpoint was created.
+# Callers must hold the task's control lock and re-validate the record after.
+fm_backend_rebind_self_pane_endpoint() {  # <meta-file> <task-id>
+  local meta=$1 id=$2 backend window workspace worktree session label created tab pane
+  backend=$(fm_backend_of_meta "$meta")
+  if [ "$backend" != herdr ]; then
+    echo "REFUSED: task $id's recorded endpoint is this session's own pane, but the '$backend' backend has no defined way to create a replacement endpoint; preserving task state." >&2
+    return 1
+  fi
+  window=$(fm_backend_meta_exact_value "$meta" window) || window=
+  workspace=$(fm_backend_meta_exact_value "$meta" herdr_workspace_id) || workspace=
+  worktree=$(fm_backend_meta_exact_value "$meta" worktree) || worktree=
+  session=${window%%:*}
+  if [ -z "$window" ] || [ -z "$workspace" ] || [ -z "$worktree" ] \
+    || [ "$session" = "$window" ] || [ -z "$session" ]; then
+    echo "REFUSED: task $id's record lacks the window, workspace, or worktree identity a replacement endpoint needs; preserving task state." >&2
+    return 1
+  fi
+  label="fm-$id"
+  fm_backend_source herdr || {
+    echo "REFUSED: the herdr backend adapter is unavailable, so no replacement endpoint can be created for task $id; preserving task state." >&2
+    return 1
+  }
+  created=$(fm_backend_herdr_create_recovery_tab "$session:$workspace" "$label" "$worktree") || {
+    echo "REFUSED: could not create a fresh endpoint for task $id in its recorded workspace $workspace (session $session); preserving task state." >&2
+    return 1
+  }
+  tab=${created%% *}
+  pane=${created#* }
+  if [ -z "$tab" ] || [ -z "$pane" ] || [ "$pane" = "$created" ]; then
+    echo "REFUSED: the created endpoint for task $id did not report a usable tab and pane; preserving task state." >&2
+    return 1
+  fi
+  fm_backend_meta_rewrite_fields "$meta" \
+    "window=$session:$pane" "herdr_tab_id=$tab" "herdr_pane_id=$pane" || {
+    echo "REFUSED: task $id's record could not be repointed at its replacement endpoint; preserving task state." >&2
+    return 1
+  }
+  printf '%s:%s' "$session" "$pane"
 }
 
 fm_backend_meta_for_window() {  # <target> <state-dir>
