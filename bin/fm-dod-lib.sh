@@ -87,7 +87,9 @@
 # fm_brief_worker_role owns the ship/scout role scope. bin/fm-spawn.sh is its one
 # emitter, supplying it first in every ship/scout launch brief and never to a
 # secondmate charter. It names the one task-owned steering inbox, the worker's
-# home-path boundary, and the broad command targets a guard refuses, without
+# home-path boundary, the broad command targets a guard refuses, and the shared
+# infrastructure a worker never administers - so a scaffold states that rule by
+# pointing here rather than restating it per task - without
 # relaxing isolation from every other home's paths or endpoint namespace. Like
 # fm_brief_intent_overlay it is a distinctly titled launch section that states
 # its own precedence, so a brief or project instruction that authors a
@@ -120,6 +122,11 @@ Never inspect or change any other home's endpoint namespace, and never inspect o
 Never aim a command at `~`, `$HOME`, `/`, or the home directory itself; name the concrete path you actually need, because a guard refuses those broad targets.
 When this task works on Firstmate itself, the repository root `AGENTS.md` (also imported by `CLAUDE.md`) is project content and the supervisor contract for the firstmate managing you: follow this brief instead of that supervisor contract.
 Project instructions still govern the work wherever they do not conflict with this worker identity, including `CONTRIBUTING.md` and `firstmate-coding-guidelines` for Firstmate changes.
+Never administer infrastructure that every lane shares: never stop, restart, or update the `no-mistakes` daemon, which is one instance serving every lane and home, so that kills other lanes' in-flight pipeline runs - only firstmate manages it - and never create, remove, return, prune, move, or reassign a worktree or pool slot, never write into a sibling slot's directory, and never return your own worktree, which firstmate does at cleanup.
+The act is the rule and commands are only examples of it: `treehouse` get/return/remove/prune, the equivalent operations on any other worktree provider or runtime backend, and `git worktree add|remove|move|prune`. A slot that looks unused is not evidence that it is free.
+Before you report the pipeline as blocked, run `no-mistakes daemon status` and `no-mistakes axi status`: a refused or missing daemon socket, or a run record failed with a daemon error, is a real block even when the local run record still says running or fixing, because that record can be stale after the daemon exits - append `blocked [at=<epoch>]: {the daemon error}` for it.
+A drive-call error, timeout, slow read, or generic unreachability is NOT a daemon error: the daemon accepts `respond` immediately and runs the round in the background, so a killed or timed-out call was only waiting for a read while the run kept working - so once socket refusal is ruled out, reattach and keep going.
+If you genuinely need a second checkout, another slot, or the daemon touched, append `blocked [at=<epoch>]: {what you need}` and stop instead of arranging it yourself.
 EOF
 }
 

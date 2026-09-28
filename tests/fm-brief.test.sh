@@ -22,6 +22,20 @@ TMP_ROOT=$(fm_test_tmproot fm-brief)
 BRIEF_HOME="$TMP_ROOT/home"
 mkdir -p "$BRIEF_HOME/data"
 
+# The worker-role scope fm-spawn.sh emits above the brief in every ship and scout
+# launch packet, owned by bin/fm-dod-lib.sh. A scaffold carries no role scope, so
+# shared role rules such as the shared-infrastructure prohibition and the
+# project-memory discipline live there and a brief points at them instead of
+# restating them (AGENTS.md section 11, one owner per contract).
+role_contract() {  # <home> <task-id>
+  local home=$1 id=$2
+  (
+    # shellcheck source=bin/fm-dod-lib.sh
+    . "$ROOT/bin/fm-dod-lib.sh"
+    FM_ROOT="$ROOT" fm_brief_worker_role "$home/state" "$id"
+  )
+}
+
 # The script itself must always parse under the ambient bash. That is Bash 5 in
 # CI and locally, where the issue #958/#1069 parser bug does not fire, so this
 # is a weak guard on its own; test_no_heredoc_in_command_substitution and the
@@ -484,10 +498,12 @@ test_ask_user_escalation_format() {
   pass "fm-brief.sh: no-mistakes ask-user findings use one event plus a verbatim snapshot"
 }
 
-# The project-memory section bounds crewmate edits of a project's AGENTS.md or
+# The project-memory discipline bounds crewmate edits of a project's AGENTS.md or
 # CLAUDE.md to corrections of factually wrong information - including wrong
 # information the task itself introduced - and never invites additions of
 # missing knowledge, because those files tax every agent session of the project.
+# It stays a ship-scaffold section: a scout edits no project instructions, so
+# the discipline rides only the packets that can use it.
 test_ship_project_memory_wording() {
   local home id brief
   home="$TMP_ROOT/project-memory-home"
@@ -1273,7 +1289,7 @@ test_worker_role_scope
 # scaffold must prohibit the administrative act itself. The rule is emitted from
 # one shared string so the ship and scout copies cannot drift apart.
 test_crewmate_scaffolds_forbid_pool_administration() {
-  local home id brief mode ship_rule scout_rule
+  local home id brief mode ship_rule scout_rule role
   home="$TMP_ROOT/pool-admin-home"
   mkdir -p "$home/data"
 
@@ -1284,28 +1300,42 @@ test_crewmate_scaffolds_forbid_pool_administration() {
     brief="$home/data/$id/brief.md"
     assert_grep "worktree pool" "$brief" \
       "$mode ship brief did not name the shared worktree pool"
-    assert_grep "create, remove, return, prune, move, or reassign" "$brief" \
-      "$mode ship brief did not state the prohibition around the act"
-    # shellcheck disable=SC2016 # Literal command text must remain unexpanded.
-    assert_grep 'git worktree add|remove|move|prune' "$brief" \
-      "$mode ship brief did not name the concrete git worktree commands"
-    assert_grep "treehouse" "$brief" \
-      "$mode ship brief did not name the treehouse mutation commands"
-    assert_grep "any other worktree provider" "$brief" \
-      "$mode ship brief pinned one provider instead of covering every provider"
+    assert_grep "worker-role scope above" "$brief" \
+      "$mode ship brief did not point at the role scope that owns the shared-infrastructure rule"
     assert_grep "sibling slot" "$brief" \
       "$mode ship brief did not forbid writing into a sibling slot"
-    # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
-    assert_grep 'blocked [at=<epoch>]: {what you need}' "$brief" \
-      "$mode ship brief gave the prohibition no exit for a genuine second-checkout need"
+    assert_grep "no-mistakes" "$brief" \
+      "$mode ship brief lost the shared no-mistakes daemon rule"
   done
+
+
+  # The prohibition's concrete acts, its example commands, the daemon diagnosis,
+  # and its exact exits belong to the worker-role scope the brief points at, which
+  # is the one owner of worker role scope; a brief that restated them would drift
+  # from it.
+  role="$home/data/role-contract.md"
+  role_contract "$home" brief-pool-no-mistakes >"$role" || fail "role_contract render exited non-zero"
+  assert_grep "create, remove, return, prune, move, or reassign" "$role" \
+    "worker role scope did not state the prohibition around the act"
+  # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+  assert_grep 'blocked [at=<epoch>]: {what you need}' "$role" \
+    "worker role scope gave the prohibition no exit for a genuine second-checkout need"
+  # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
+  assert_grep 'blocked [at=<epoch>]: {the daemon error}' "$role" \
+    "worker role scope lost the daemon-error reporting instruction"
+  # shellcheck disable=SC2016 # Literal command text must remain unexpanded.
+  assert_grep 'git worktree add|remove|move|prune' "$role" \
+    "worker role scope did not name the concrete git worktree commands"
+  assert_grep "treehouse" "$role" \
+    "worker role scope did not name the treehouse mutation commands"
+  assert_grep "any other worktree provider" "$role" \
+    "worker role scope pinned one provider instead of covering every provider"
 
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-pool-scout alpha --scout >/dev/null 2>&1 \
     || fail "fm-brief.sh --scout exited non-zero"
   brief="$home/data/brief-pool-scout/brief.md"
   assert_grep "worktree pool" "$brief" "scout brief did not name the shared worktree pool"
-  # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
-  assert_grep 'blocked [at=<epoch>]: {what you need}' "$brief" "scout brief gave the prohibition no exit"
+  assert_grep "no-mistakes" "$brief" "scout brief lost the shared no-mistakes daemon rule"
 
   # One shared string, not two copies: the emitted rule must be byte-identical
   # across the ship and scout scaffolds so a later edit cannot fix one and miss
@@ -1316,11 +1346,6 @@ test_crewmate_scaffolds_forbid_pool_administration() {
   [ "$ship_rule" = "$scout_rule" ] \
     || fail "ship and scout shared-infrastructure rules have drifted apart"
 
-  # The daemon half of the rule survived the fold.
-  assert_grep "no-mistakes" "$brief" "scout brief lost the shared no-mistakes daemon rule"
-  # shellcheck disable=SC2016 # Literal backticks and braces must remain unexpanded.
-  assert_grep 'blocked [at=<epoch>]: {the daemon error}' "$brief" \
-    "scout brief lost the daemon-error reporting instruction"
 
   # A secondmate runs its own home and legitimately allocates and returns slots
   # for its own crewmates, so the crewmate prohibition must NOT reach its charter.
@@ -1332,6 +1357,98 @@ test_crewmate_scaffolds_forbid_pool_administration() {
     "secondmate charter must not inherit the crewmate pool-administration prohibition"
 
   pass "fm-brief.sh: every crewmate scaffold forbids administering the shared worktree pool"
+}
+
+# The thinness yardstick for a generated crewmate brief: shared framework prose
+# belongs in the worker-role scope the launch packet carries or behind a pointer,
+# so fixed overhead cannot creep back one paragraph at a time. A brief prints its
+# own checkout root and home path inside its commands, so its byte count grows
+# with checkout depth - bytes no framework edit can shrink. Assert the budget at
+# the live-home path shape (one 25-byte directory serving as both the checkout
+# root and the home) through FM_ROOT_OVERRIDE, so the asserted number is a
+# delivered brief's own size and is the same wherever the suite runs. The
+# realistic 16-byte task id keeps the asserted size the id-sensitive worst case.
+test_brief_size_stays_within_budget() {
+  local home root id size plain herdr
+  root="/tmp/fm-brief-size-fixture"
+  home="$root"
+  rm -rf "$root"
+  mkdir -p "$home/data"
+  FM_ROOT_OVERRIDE="$root" FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-size-plain firstmate --mode local-only >/dev/null 2>&1 \
+    || fail "fm-brief.sh --mode local-only exited non-zero"
+  FM_ROOT_OVERRIDE="$root" FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-size-herdr firstmate --mode local-only --herdr-lab >/dev/null 2>&1 \
+    || fail "fm-brief.sh --herdr-lab exited non-zero"
+  plain="$home/data/brief-size-plain/brief.md"
+  herdr="$home/data/brief-size-herdr/brief.md"
+  size=$(wc -c <"$plain")
+  [ "$size" -le 8000 ] \
+    || fail "a plain crewmate brief must stay within 8000 bytes, got $size (home=$home root=$root)"
+  size=$(wc -c <"$herdr")
+  [ "$size" -le 11000 ] \
+    || fail "a --herdr-lab crewmate brief must stay within 11000 bytes, got $size (home=$home root=$root)"
+  # A herdr brief is a superset of the plain one: it swaps the unguarded
+  # declaration for the guarded lab contract and must still stay inside budget.
+  assert_grep "# Herdr isolation - HARD SAFETY CONTRACT" "$herdr" \
+    "herdr brief lost its guarded lifecycle contract"
+  assert_no_grep "# Herdr lifecycle declaration - NOT ENABLED" "$herdr" \
+    "herdr brief still carries the unguarded declaration"
+  rm -rf "$root"
+  pass "fm-brief.sh: generated crewmate briefs stay inside their size budget"
+}
+
+# The budget must never be met by dropping a section a worker cannot work
+# without: the isolation assertion, the status append protocol, the steering
+# inbox, and the definition of done stay inline in the brief itself.
+test_brief_keeps_inline_mandatory_sections() {
+  local home id brief size
+  home="$TMP_ROOT/m"
+  mkdir -p "$home/data"
+  for id in brief-mandatory-ship brief-mandatory-herdr brief-mandatory-scout; do
+    if [ "$id" = brief-mandatory-scout ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --scout >/dev/null 2>&1
+    elif [ "$id" = brief-mandatory-herdr ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode local-only --herdr-lab >/dev/null 2>&1
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode local-only >/dev/null 2>&1
+    fi
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$id brief was not scaffolded"
+    if [ "$id" = brief-mandatory-scout ]; then
+      # A scout has no branch to create and is bounded to its scratch worktree
+      # instead of carrying the ship scaffold's isolation refusal.
+      assert_grep "Stay inside this worktree" "$brief" \
+        "$id brief dropped its inline worktree boundary"
+    else
+      # The ship scaffolds are the ones that branch and commit, so they carry the
+      # worktree isolation assertion and its refusal.
+      assert_grep "Verify isolation before anything else" "$brief" \
+        "$id brief dropped the inline worktree isolation assertion"
+      assert_grep "launched in primary checkout, not an isolated worktree" "$brief" \
+        "$id brief dropped the inline isolation refusal"
+    fi
+    assert_grep "Report status by appending one line" "$brief" \
+      "$id brief dropped the inline status append protocol"
+    assert_grep "# Firstmate instruction inbox" "$brief" \
+      "$id brief dropped the inline steering inbox section"
+    assert_grep "# Definition of done" "$brief" \
+      "$id brief dropped the inline definition of done"
+    # A block read from a quoted heredoc keeps backslashes literally, so escaped
+    # backticks written for an unquoted heredoc would reach the worker as \`text\`,
+    # not as the inline code the section means to show.
+    assert_no_grep '\`' "$brief" \
+      "$id brief rendered an escaped backtick instead of inline code"
+    if [ "$id" != brief-mandatory-scout ]; then
+      assert_grep "Delivery contract: mode=" "$brief" \
+        "$id brief dropped the machine-readable delivery contract line"
+    fi
+    if [ "$id" = brief-mandatory-herdr ]; then
+      # A Herdr-lab brief swaps the unguarded declaration for the guarded lab
+      # contract, and that contract must carry its own safety bound inline.
+      assert_grep "# Herdr isolation - HARD SAFETY CONTRACT" "$brief" \
+        "$id brief dropped the guarded Herdr isolation contract"
+    fi
+  done
+  pass "fm-brief.sh: every crewmate brief keeps its mandatory inline sections"
 }
 
 test_script_parses
@@ -1367,4 +1484,6 @@ test_ship_branch_prefix_empty_override_yields_bare_task_id
 test_branch_prefix_is_refused_where_it_does_not_apply
 test_branch_prefix_value_is_validated
 test_branch_prefix_command_is_shell_safe
+test_brief_size_stays_within_budget
+test_brief_keeps_inline_mandatory_sections
 test_crewmate_scaffolds_forbid_pool_administration

@@ -99,12 +99,10 @@
 # Every scaffold also carries the steering-inbox receive-and-ack section:
 # process state/<id>.inbox/*.msg in order and acknowledge each by moving it to
 # handled/ (record, doorbell, and ladder owned by bin/fm-task-inbox-lib.sh).
-# Ship tasks include a project-memory section bounding crewmate edits to a
-# project's AGENTS.md/CLAUDE.md: only corrections of factually wrong
-# information, including wrong information the task itself introduced - never
-# additions of missing knowledge. A correction edits only the wrong text and
-# never runs fm-ensure-agents-md.sh, whose inserted sections and created
-# pointer file are themselves additions.
+# The shared-infrastructure prohibition's procedure - its example commands, its
+# daemon diagnosis, and its exact `blocked [at=<epoch>]` exits - is worker-role scope
+# owned by fm_brief_worker_role (bin/fm-dod-lib.sh), so rule 7 points at that scope
+# instead of restating it. Project memory stays a ship-scaffold section below.
 # Scaffolds carry no role scope: fm-spawn.sh supplies fm_brief_worker_role from
 # fm-dod-lib.sh to every ship/scout launch brief, so this file never becomes a
 # second owner of a contract that must stay current across relaunches.
@@ -146,7 +144,7 @@ PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 IFS= read -r -d '' CREWMATE_PAUSE_INSTRUCTIONS <<EOF || true
    Use \`$PAUSED_VERB: {why}\` - distinct from \`blocked:\` - when deliberately waiting for work or an external condition expected to clear on its own, including your own validation round.
    Before ending your turn with your own background shell or monitor still running, or before waiting on your own pipeline run or a long foreground command, append \`$PAUSED_VERB [at=<epoch>]: {job and completion condition}\` to the status file.
-   Name what you are waiting for and what will let you resume; do not repeat the declaration on every poll.
+   Say what will resume you; do not repeat the declaration on every poll.
    Do not declare active implementation or reasoning as a wait.
    Firstmate may still raise one first-sight alert; the declared wait then uses the existing long recheck cadence instead of repeated possible-wedge alarms.
    When you know when the wait clears, include \`until <YYYY-MM-DDTHH:MMZ>\` (UTC) for a recheck at that time.
@@ -356,7 +354,7 @@ INBOX_DIR=$(shell_quote "$STATE/$ID.inbox")
 # Secondmate charters own their home and must never carry it.
 IFS= read -r -d '' STATUS_SCOPE_NOTE <<'EOF' || true
    Outside your worktree, the only paths this task authorizes under a firstmate home are the exact task paths this brief names for you: your status file above, your own steering inbox below, and any report path it gives you.
-   Run that status command exactly as written: it is complete, and its `fleet-ledger` branch is firstmate's own bookkeeping that you never need to open, read, or look up.
+   Run that status command exactly as written; its `fleet-ledger` branch is firstmate's own bookkeeping.
    Never scan, list, search, or read any other path under a firstmate home, never hunt for a `*.status` file, and never rewrite the status path relative to your worktree.
    Never aim a command at `~`, `$HOME`, `/`, or the home directory itself; name the concrete path you actually need, because a guard refuses those broad targets.
    If a guard refuses a command, do not wait for it to be allowed and do not work around it: name the concrete path if you genuinely need one, and otherwise drop it and continue your assigned task.
@@ -505,9 +503,8 @@ HERDR_SECTION=$(printf '%s\n' \
 else
 IFS= read -r -d '' HERDR_SECTION <<'EOF' || true
 # Herdr lifecycle declaration - NOT ENABLED
-**HARD SAFETY GATE:** this scaffold cannot inspect the task text filled in above.
-If the task will start, stop, delete, restart, profile, or otherwise drive Herdr lifecycle behavior, stop and regenerate the brief with `--herdr-lab` before dispatch.
-Do not add Herdr lifecycle commands to this unguarded brief by hand.
+**HARD SAFETY GATE:** this scaffold cannot inspect the task text above.
+If the task will drive Herdr lifecycle behavior, stop and regenerate the brief with `--herdr-lab` before dispatch, and never add those commands to this unguarded brief by hand.
 EOF
 HERDR_SECTION=${HERDR_SECTION%$'\n'}
 fi
@@ -527,28 +524,9 @@ TASK_SECTION=${TASK_SECTION%$'\n'}
 # The secondmate charter deliberately omits this rule because a secondmate
 # legitimately allocates and returns slots for crewmates in its own home.
 IFS= read -r -d '' SHARED_INFRA_RULE <<'EOF' || true
-7. Never administer infrastructure that every lane shares. Two things are shared:
-   - The `no-mistakes` daemon - one instance serving every lane/home, so stopping, restarting, or
-     updating it kills other lanes' in-flight pipeline runs; only firstmate manages the daemon.
-     Before you append `blocked:` about the pipeline, run `no-mistakes daemon status` and
-     `no-mistakes axi status`. If the daemon socket refuses connections or is missing, append
-     `blocked [at=<epoch>]: {the daemon error}` and stop even when the local run record still says running or
-     fixing, because that record can be stale after the daemon exits. A run record failed with a
-     daemon error is also a real block.
-     Only after ruling out socket refusal, if the run is still running or fixing, reattach and keep
-     going. A drive-call error, timeout, slow read, or generic unreachability is NOT a daemon error:
-     the daemon accepts `respond` immediately and runs the round in the background, so a killed or
-     timed-out call was only waiting for a read while the run kept working.
-   - The worktree pool your own worktree came from, and the repository every lane's worktree
-     shares. Never create, remove, return, prune, move, or reassign a worktree or pool slot, and
-     never write into a sibling slot's directory. Rule 2 does not cover this: removing a worktree
-     is administration rather than an edit outside your directory, and it lands on lanes that are
-     running right now. The act is the rule and commands are only examples of it - `treehouse`
-     get/return/remove/prune, the equivalent operations on any other worktree provider or runtime
-     backend, and `git worktree add|remove|move|prune`. A slot that looks unused is not evidence
-     that it is free, and returning your own worktree is firstmate's job at cleanup, not yours.
-   If you genuinely need a second checkout, another slot, or the daemon touched, append
-   `blocked [at=<epoch>]: {what you need}` and stop; firstmate arranges it.
+7. Never administer infrastructure that every lane shares: the `no-mistakes` daemon, the shared
+   worktree pool your own worktree came from, or a sibling slot - never return your own worktree.
+   The worker-role scope above owns the rule's example commands and exact exits.
 EOF
 SHARED_INFRA_RULE=${SHARED_INFRA_RULE%$'\n'}
 
@@ -559,7 +537,7 @@ else
   LAVISH_LINE='Lavish is unavailable (lavish-axi is missing or below its supported version floor), so deliver your findings as a text report without Lavish, even for a visual deliverable.'
 fi
 cat > "$BRIEF" <<EOF
-You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
+Work on your own; do not wait for a human.
 
 $TASK_SECTION
 
@@ -631,7 +609,7 @@ RULE1=$(fm_ship_rule_one "$MODE" "$ID" "$BRANCH" "$FORGE") || exit 1
 DOD=$(fm_dod_block "$MODE" "$ID" "$BRANCH" "$FORGE") || exit 1
 
 cat > "$BRIEF" <<EOF
-You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
+Work on your own; do not wait for a human.
 
 $TASK_SECTION
 
@@ -641,7 +619,7 @@ $HERDR_SECTION
 You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
 
 **Verify isolation before anything else.** Run \`pwd -P\` and \`git rev-parse --show-toplevel\`; both must resolve to the disposable task worktree you were launched in, such as a treehouse pool path or an Orca-managed worktree, not the primary checkout firstmate operates from.
-The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse --git-common-dir\` can help inspect the repo, but they do not prove you are outside the primary checkout.
+The path check is authoritative: \`git rev-parse --git-dir\` and \`--git-common-dir\` do not prove you are outside the primary checkout.
 If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked [at=<epoch>]: launched in primary checkout, not an isolated worktree\` to the status file and stop.
 
 1. First action: create your branch: \`git checkout -b $BRANCH_Q --\`$SETUP2
