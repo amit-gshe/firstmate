@@ -28,6 +28,7 @@ Holding the work item the question gates is safe for exactly that reason: cleanu
 Only `answer` with the captain's words or an evidence-backed `reconcile close` may resolve it.
 
 Never close anything the captain owns without recording what he actually said: `bin/fm-captain-hold.sh answer` writes his exact words into the task and closes a question-shaped call, while `--release` frees a captain-gated work item to proceed.
+Those words arrive inline with `--decision "<his exact words>"` or staged with `--decision-file <path>`, and a task that already exists and is not held needs no `hold` first: that one command records the words and closes it, so only a question still waiting on the captain, a genuine deferral, or a row that does not exist yet takes the longer sequence.
 A merge approval uses that existing release path because approval permits the merge to proceed; cleanup closes the work only after it lands and records what shipped.
 Closing a held row at merge approval instead records completion before landing, so the backlog claims completion before the work actually ships.
 When the answer changes what a task must build, follow `AGENTS.md` section 7's mid-task ask rule to preserve the captain's words in the brief and steer the worker.

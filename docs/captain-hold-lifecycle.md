@@ -72,7 +72,8 @@ The `answer` subcommand records the captain's exact words and resolves the call 
 | `answer` | Closes a question-shaped call. |
 | `answer --release` | Frees a captain-gated work item to proceed without completing it. |
 
-It requires a non-empty captain decision file of at most 8192 bytes.
+It requires non-empty captain words of at most 8192 bytes, given inline with `--decision <text>` or staged in a file with `--decision-file <path>`.
+A work item that already exists and is not held for the captain closes through that same act, so recording an answer the captain has already given needs no `hold` first; `--release` is refused there because there is no hold to lift.
 It then works in this order:
 
 1. It durably writes a resolution block carrying the decision digest and a `Resolution mode:`.

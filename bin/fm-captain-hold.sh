@@ -22,6 +22,7 @@
 # Usage:
 #   fm-captain-hold.sh hold <task-id> --reason <reason> \
 #     [--title <title>] [--repo <repo>] [--origin <origin-id>] [--until YYYY-MM-DD]
+#   fm-captain-hold.sh answer <task-id> --decision <text> [--release]
 #   fm-captain-hold.sh answer <task-id> --decision-file <path> [--release]
 #   fm-captain-hold.sh answers [<legacy-origin> | --any-origin] --source <provenance>   (keyed answers on stdin)
 #   fm-captain-hold.sh reconcile-requests --source-id <source-id> --source <provenance>   (task ids on stdin)
@@ -54,10 +55,16 @@
 # card.
 #
 # `answer` records the captain's exact words and resolves the call in the same
-# act. It requires a non-empty captain decision file of at most 8192 bytes and
-# writes a resolution block while preserving the leading hold-set stamp until
-# the close succeeds (the previous body is preserved and archived through
-# tasks-axi --archive-body). It closes a question with `tasks-axi done` - or,
+# act. Those words arrive inline with `--decision <text>` or from
+# `--decision-file <path>`, and either form must be non-empty and at most 8192
+# bytes. An EXISTING work item that is not held for the captain takes the SHORT
+# PATH: the words are recorded on the item and it closes in that one command, so
+# a one-sentence ruling on a row that already exists needs no hold ceremony
+# first, and `--release` there is refused because there is no hold to lift.
+# `hold` remains for a genuine deferral (`--until`) and for creating the row an
+# answer needs. The close writes a resolution block while preserving the
+# leading hold-set stamp until the close succeeds (the previous body is
+# preserved and archived through tasks-axi --archive-body). It closes a question with `tasks-axi done` - or,
 # with `--release`, lifts the hold with `tasks-axi unhold` so a captain-gated
 # WORK item resumes without closing - and restores resolution-first body
 # ordering. An exact retry also completes unfinished ordering normalization and
@@ -319,16 +326,30 @@ BINDING_ANY='(any)'
 DECISION_TEXT=''
 DECISION_DIGEST=''
 
+# Both decision forms feed one recorder, so an inline ruling and a staged file
+# are indistinguishable once recorded: one cap, one digest, one record.
+record_decision() {  # <text> <label>; sets DECISION_TEXT and DECISION_DIGEST
+  local decision=$1 label=$2
+  [ "$(printf '%s' "$decision" | LC_ALL=C wc -c | tr -d ' ')" -le 8192 ] \
+    || fail "$label exceeds 8192 bytes"
+  DECISION_TEXT=$decision
+  DECISION_DIGEST=$(sha256_text "$decision")
+}
+
 load_decision() {  # <path>; sets DECISION_TEXT and DECISION_DIGEST
   local path=$1 decision
-  [ -n "$path" ] || fail "--decision-file is required"
+  [ -n "$path" ] || fail "answer requires --decision <text> or --decision-file <path>"
   [ -f "$path" ] || fail "decision file does not exist: $path"
   decision=$(cat "$path")
   [ -n "$decision" ] || fail "decision file must not be empty"
-  [ "$(printf '%s' "$decision" | LC_ALL=C wc -c | tr -d ' ')" -le 8192 ] \
-    || fail "decision file exceeds 8192 bytes"
-  DECISION_TEXT=$decision
-  DECISION_DIGEST=$(sha256_text "$decision")
+  record_decision "$decision" "decision file"
+}
+
+# The inline form of the same words: `answer <id> --decision "<text>"` needs no
+# staging file, so a one-line ruling on an existing item is one command.
+load_decision_text() {  # <text>; sets DECISION_TEXT and DECISION_DIGEST
+  [ -n "$1" ] || fail "--decision must not be empty"
+  record_decision "$1" "decision"
 }
 
 # Mutations address the configured data directory's backlog from its root, the
@@ -995,19 +1016,26 @@ remove_interrupted_answer_stamp() {  # <task-id>
 }
 
 command_answer() {
-  local id=${1:-} decision_file='' release=0 show state hold_kind body outcome recorded_mode occurrence
+  local id=${1:-} decision_file='' decision_text='' decision_text_set=0 release=0 show state hold_kind body outcome recorded_mode occurrence
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --decision-file) shift; decision_file=${1:-} ;;
+      --decision) shift; decision_text=${1:-}; decision_text_set=1 ;;
       --release) release=1 ;;
       *) usage >&2; exit 2 ;;
     esac
     shift
   done
   validate_slug task-id "$id"
-  load_decision "$decision_file"
+  [ -z "$decision_file" ] || [ "$decision_text_set" = 0 ] \
+    || fail "--decision and --decision-file are mutually exclusive"
+  if [ "$decision_text_set" = 1 ]; then
+    load_decision_text "$decision_text"
+  else
+    load_decision "$decision_file"
+  fi
   acquire_task_control_lock "$id"
   require_tasks_axi
   task_show "$id" || fail "captain-held task $id is absent from this home's configured backlog (data directory $DATA)"
@@ -1094,19 +1122,56 @@ command_answer() {
     return 0
   fi
 
-  # Not held and not closed: only an already-recorded release replays cleanly.
+  # Not held and not closed: the SHORT PATH. An existing work item the captain
+  # has ruled on records his words and closes in the same one command, so a
+  # one-line ruling needs no hold ceremony first. A matching record is an
+  # interrupted short-path close to finish, or an already-recorded release to
+  # replay; `--release` has no hold to lift on a task that is not held, so a
+  # release request here is refused rather than recorded as an answer.
+  recorded_mode=''
+  resume_interrupted_close=0
   if body_has_resolution_record "$body"; then
     recorded_mode=$(recorded_resolution_mode "$body" || true)
-    [ "$(recorded_decision_digest "$body" || true)" = "$DECISION_DIGEST" ] \
-      || fail "task $id records a different captain decision with mode ${recorded_mode:-unknown}"
-    [ "$recorded_mode" = released ] && [ "$release" = 1 ] \
-      || fail "task $id records this answer with mode ${recorded_mode:-unknown}; replay requires matching --release"
-    remove_interrupted_answer_stamp "$id"
-    publish_parent_resolution_then_retire "$id" $((occurrence - 1)) released
-    printf 'released: %s\n' "$id"
-    return 0
+    if [ "$(recorded_decision_digest "$body" || true)" = "$DECISION_DIGEST" ]; then
+      case "$recorded_mode" in
+        released)
+          [ "$release" = 1 ] \
+            || fail "task $id records this answer with mode released; retry with --release"
+          remove_interrupted_answer_stamp "$id"
+          publish_parent_resolution_then_retire "$id" $((occurrence - 1)) released
+          printf 'released: %s\n' "$id"
+          return 0
+          ;;
+        answered|routed)
+          [ "$release" = 0 ] \
+            || fail "task $id records this answer with mode $recorded_mode; retry without --release"
+          resume_interrupted_close=1
+          ;;
+        *)
+          fail "task $id records this resolution with mode ${recorded_mode:-unknown}; it is not a captain-answer replay"
+          ;;
+      esac
+    else
+      fail "task $id records a different captain decision with mode ${recorded_mode:-unknown}"
+    fi
   fi
-  fail "task $id is not held for the captain; hold it first or name the right task"
+  [ "$release" = 0 ] \
+    || fail "task $id is not held for the captain; there is no hold to release"
+  if [ "$resume_interrupted_close" = 0 ]; then
+    write_resolution_record "$id" answered "$body"
+  else
+    occurrence=$((occurrence - 1))
+  fi
+  close_answered "$id" 0 || fail "could not close answered task $id"
+  remove_interrupted_answer_stamp "$id"
+  task_show "$id" || fail "task $id disappeared after closing"
+  show=$TASK_SHOW_OUTPUT
+  [ "$(show_field "$show" state)" = "done" ] || fail "recorded answer did not close task $id"
+  body_has_resolution_record "$(show_field "$show" body)" \
+    || fail "task $id did not retain its durable resolution record"
+  publish_parent_resolution_then_retire "$id" "$occurrence" answered
+  printf 'answered: %s\n' "$id"
+  return 0
 }
 
 # --- the one keyed-answer intake, and the source bindings that feed it --------

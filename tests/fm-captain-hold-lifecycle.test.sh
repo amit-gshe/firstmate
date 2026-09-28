@@ -834,10 +834,17 @@ test_answer_records_and_closes() {
     > "$home/absent-answer.out" 2> "$home/absent-answer.err"; then
     fail "answer invented a resolution for a task that does not exist"
   fi
-  if run_captain "$home" answer sample-guard-work --decision-file "$home/invented.txt" \
+  # The short path closes an unheld item on the captain's words, but a release
+  # still needs a hold to lift, so --release here is refused and changes nothing.
+  if run_captain "$home" answer sample-guard-work --decision-file "$home/invented.txt" --release \
     > "$home/unheld-answer.out" 2> "$home/unheld-answer.err"; then
-    fail "answer closed a task that is not held for the captain"
+    fail "answer recorded a release on a task that is not held for the captain"
   fi
+  assert_grep "no hold to release" "$home/unheld-answer.err" \
+    "the refused release did not name the missing hold"
+  show=$(tasks_in "$home" show sample-guard-work --full)
+  assert_contains "$show" "state: queued" "a refused release closed the unheld work item"
+  assert_contains "$show" "held: no" "a refused release held the unheld work item"
   show=$(tasks_in "$home" show sample-guard-call --full)
   assert_contains "$show" "state: queued" "a refused answer closed the captain-held task"
   assert_contains "$show" "held: yes" "a refused answer released the captain-held task"
@@ -871,6 +878,113 @@ test_answer_records_and_closes() {
       and (.landed | any(.id == "sample-guard-call") | not)
   ' >/dev/null || fail "an answered captain call still renders somewhere it should not: $json"
   pass "answer records the captain's words, closes idempotently, and releases routed work"
+}
+
+# The short path is the normal one: an existing work item the captain has ruled
+# on records his exact words and closes in the SAME one command, with no hold
+# ceremony first. The read-only predicate the watcher asks before it alarms must
+# agree in both directions, and a close with nothing recorded stays a refusal.
+test_one_command_close_on_an_existing_work_item() {
+  local home id show out identity count
+  home=$(make_home existing-item-close)
+
+  # A queued item that was never held is not an open captain call, so it neither
+  # bounds nor raises the stale alarm.
+  id=sample-existing-call
+  tasks_in "$home" add "$id" "Ask whether the sample probe should stay" \
+    --kind ship --repo sample >/dev/null \
+    || fail "could not add the existing work item"
+  if run_captain "$home" open "$id" --identity > "$home/before.out" 2>/dev/null; then
+    fail "an unheld work item already read as an open captain call"
+  fi
+
+  # Nothing recorded stays a refusal: the short path never closes silently.
+  if run_captain "$home" answer "$id" > "$home/nothing.out" 2> "$home/nothing.err"; then
+    fail "answer closed an existing work item with no captain words at all"
+  fi
+  assert_grep "requires --decision" "$home/nothing.err" \
+    "the refusal did not name the missing captain words"
+  show=$(tasks_in "$home" show "$id" --full)
+  assert_contains "$show" "state: queued" "a refused answer closed the existing work item"
+  assert_contains "$show" "held: no" "a refused answer held the existing work item"
+
+  # One command: the captain's words, and the close.
+  out=$(run_captain "$home" answer "$id" --decision "Turn the sample probe off for good.") \
+    || fail "the one-command close failed on an existing work item"
+  assert_contains "$out" "answered: $id" "the one-command close did not report the answer"
+  show=$(tasks_in "$home" show "$id" --full)
+  assert_contains "$show" "state: done" "the one-command close did not close the item"
+  assert_contains "$show" "Resolution mode: answered" "the one-command close recorded another mode"
+  assert_contains "$show" "Turn the sample probe off for good." \
+    "the one-command close lost the captain's verbatim words"
+
+  # The alarm stays bounded: a closed item is no longer an open call.
+  if run_captain "$home" open "$id" --identity > "$home/after.out" 2>/dev/null; then
+    fail "a closed item still read as an open captain call"
+  fi
+
+  # The staged-file form of the same words closes an existing item just as
+  # directly; the input form is not what selects the short path.
+  tasks_in "$home" add sample-existing-file-call "Ask whether to keep the probe log" \
+    --kind ship --repo sample >/dev/null
+  printf 'Keep the probe log for now.\n' > "$home/keep.txt"
+  run_captain "$home" answer sample-existing-file-call --decision-file "$home/keep.txt" >/dev/null \
+    || fail "the short path refused the staged-file form of the captain's words"
+  show=$(tasks_in "$home" show sample-existing-file-call --full)
+  assert_contains "$show" "state: done" "the staged-file short path did not close the item"
+  assert_contains "$show" "Keep the probe log for now." \
+    "the staged-file short path lost the captain's words"
+
+  # `--release` has no hold to lift on an item that is not held, so it is
+  # refused rather than recorded as an answer.
+  tasks_in "$home" add sample-not-held-release "Another sample question" \
+    --kind ship --repo sample >/dev/null
+  if run_captain "$home" answer sample-not-held-release --decision "Go ahead." --release \
+    > "$home/release.out" 2> "$home/release.err"; then
+    fail "answer --release recorded a release on a work item with no hold"
+  fi
+  assert_grep "no hold to release" "$home/release.err" \
+    "the refused release did not name the missing hold"
+  show=$(tasks_in "$home" show sample-not-held-release --full)
+  assert_contains "$show" "state: queued" "a refused release closed an item that was not held"
+
+  # The still-open path: while the captain is still deciding, the predicate DOES
+  # report an open call, and that is what keeps the stale alarm bounded.
+  run_captain "$home" hold sample-not-held-release --reason "captain still deciding" >/dev/null \
+    || fail "could not hold the still-open item"
+  identity=$(run_captain "$home" open sample-not-held-release --identity) \
+    || fail "a captain-held item did not read as an open captain call"
+  [ -n "$identity" ] || fail "the open captain call printed no lifecycle identity"
+
+  # An interrupted short-path close finishes on retry instead of recording a
+  # second answer on the item.
+  tasks_in "$home" add sample-interrupted-short "Ask whether to keep the probe" \
+    --kind ship --repo sample >/dev/null
+  cat > "$home/fakebin/tasks-axi" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = done ] && [ "${2:-}" = sample-interrupted-short ] \
+  && [ ! -e "$FM_HOME/short-close-failed-once" ]; then
+  : > "$FM_HOME/short-close-failed-once"
+  exit 92
+fi
+exec "$REAL_TASKS_AXI" "$@"
+EOF
+  chmod +x "$home/fakebin/tasks-axi"
+  if run_captain "$home" answer sample-interrupted-short --decision "Keep it, but quietly." \
+    > "$home/short-interrupted.out" 2> "$home/short-interrupted.err"; then
+    fail "the forced short-path close failure reported success"
+  fi
+  show=$(tasks_in "$home" show sample-interrupted-short --full)
+  assert_contains "$show" "state: queued" "an interrupted short-path close closed the item anyway"
+  run_captain "$home" answer sample-interrupted-short --decision "Keep it, but quietly." >/dev/null \
+    || fail "the interrupted short-path close could not finish on retry"
+  show=$(tasks_in "$home" show sample-interrupted-short --full)
+  assert_contains "$show" "state: done" "the short-path close retry did not close the item"
+  count=$(printf '%s\n' "$show" | grep -o 'Resolution recorded by fm-captain-hold' | wc -l | tr -d ' ')
+  [ "$count" = 1 ] || fail "the short-path close retry recorded $count resolution blocks, not one"
+  rm -f "$home/fakebin/tasks-axi"
+
+  pass "an existing work item closes on the captain's words in one command"
 }
 
 # --release lifts the hold instead of closing, preserving the work item's own
@@ -4039,6 +4153,7 @@ test_hold_decodes_a_bare_scalar_body_without_the_nonref_default
 test_retained_body_keeps_its_utf8_bytes
 test_completion_gate_attests_and_transfers
 test_answer_records_and_closes
+test_one_command_close_on_an_existing_work_item
 test_release_frees_held_work
 test_hold_stamp_precedes_hold_visibility
 test_interrupted_answer_preserves_hold_age
