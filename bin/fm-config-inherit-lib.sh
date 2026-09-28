@@ -3,7 +3,8 @@
 # set of LOCAL (gitignored) config items down into each secondmate home's
 # config/, so a secondmate's OWN crewmates inherit the primary's settings
 # (e.g. primary config/crew-dispatch.json makes a secondmate use the same dispatch
-# profile rules and primary config/dispatch-never-send keeps the same values
+# profile rules, primary config/crew-effort gives a secondmate's own crewmates the
+# same per-class effort defaults, and primary config/dispatch-never-send keeps the same values
 # out of its dispatch resolver requests, primary config/crew-harness=codex makes a secondmate's crewmates
 # spawn on codex too, primary config/backlog-backend=manual makes that home
 # hand-edit backlog files too, primary config/backend pins that home's local
@@ -79,7 +80,7 @@ FM_SHARED_CAPTAIN_MODE="444"
 # The declared inheritable set (space-separated, config-dir-relative item paths).
 # Extend here to inherit more of the primary's local config; override via the
 # environment only in tests. Items must not contain whitespace.
-FM_INHERITABLE_CONFIG="${FM_INHERITABLE_CONFIG:-crew-dispatch.json dispatch-never-send crew-harness backlog-backend backend herdr-presentation-spaces startup-memory-budget trace-context launch-env-allowlist claude-permission-mode lavish-axi-host keep-ai-trailers}"
+FM_INHERITABLE_CONFIG="${FM_INHERITABLE_CONFIG:-crew-dispatch.json crew-effort dispatch-never-send crew-harness backlog-backend backend herdr-presentation-spaces startup-memory-budget trace-context launch-env-allowlist claude-permission-mode lavish-axi-host keep-ai-trailers}"
 
 # Items whose value is a home-SESSION enablement decision rather than durable
 # local configuration. They are inherited at the launch convergence point, where

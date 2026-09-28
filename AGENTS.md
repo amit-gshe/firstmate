@@ -104,8 +104,9 @@ When every candidate is tight, preserve the captain's strongest-reasoning class 
 Break genuine evidence ties without array-order or harness bias.
 `quota-axi` owns how model or product windows relate to bounding account windows and remains data-only.
 Load `quota-array-dispatch` before choosing among a matched profile array; that skill is the single owner of the TOON-first spendPriority selection procedure.
-Run `bin/fm-dispatch-resolve.sh` directly on the written brief in the same turn, with no preflight, and on `clear` pass its `profile:` line to `fm-spawn` unless you state a reason to override; `ambiguous`, `escalate`, `error`, and off all mean the intake above, unchanged (contract: `docs/configuration.md` "Typed dispatch resolution").
-The generic effort fallback and its precedence are owned by `harness-adapters`: explicit captain and standing configured effort win; otherwise use low for well-understood explicit work, xhigh for ambiguous investigation or design, intermediate levels proportionally, and never max without explicit captain preference.
+With no `config/crew-dispatch.json` there are no profiles to resolve, so skip the `bin/fm-dispatch-resolve.sh` step entirely: it is a silent no-op that prints nothing and costs no turn.
+On a configured file, run it directly on the written brief in the same turn with no preflight; `clear` means pass its `profile:` line to `fm-spawn` unless you state a reason to override, and `ambiguous`, `escalate`, `error`, and off all mean the intake above, unchanged (contract: `docs/configuration.md` "Typed dispatch resolution").
+The per-class effort default and its precedence are owned by `harness-adapters`: an explicit captain request and a standing configured effort win, otherwise the task's class default applies, a captain changes it through that owner's one documented config value, and `max` is never a default without explicit captain preference.
 Do not add model-specific versions of that policy.
 
 `secondmate-provisioning` owns secondmate harness pins and inherited local material, while `harness-adapters` owns the harness consequences.

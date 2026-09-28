@@ -666,6 +666,164 @@ test_grok_omits_invalid_xhigh_reasoning_effort() {
   pass "grok omits unsupported xhigh reasoning effort"
 }
 
+# --- --effort-class: one standing default per task class -------------------------
+# The class is a choice of default, never a level demand: config/crew-effort sets
+# a class's level, an explicit --effort still wins, and the resolved level goes
+# through the same per-harness validation an explicit --effort does.
+# Ids are quoted because this fixture assigns a variable named effort, which makes
+# an unquoted effort-...-zNN slug read as arithmetic to ShellCheck (SC2100).
+
+test_effort_class_explicit_defaults_to_low() {
+  local rec id out status launch
+  id='effort-class-explicit-z24'
+  rec=$(make_spawn_case effort-class-explicit claude "$id")
+  read_case_record "$rec"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model sonnet --effort-class explicit)
+  status=$?
+  expect_code 0 "$status" "explicit-class spawn should succeed"
+  assert_meta_profile "$HOME_DIR/state/$id.meta" claude sonnet low
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "--effort 'low'" "the explicit class default must reach the claude launch"
+  pass "--effort-class explicit applies the built-in low default"
+}
+
+test_effort_class_investigation_defaults_to_xhigh() {
+  local rec id out status launch
+  id='effort-class-investigation-z25'
+  rec=$(make_spawn_case effort-class-investigation claude "$id")
+  read_case_record "$rec"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model sonnet --effort-class investigation)
+  status=$?
+  expect_code 0 "$status" "investigation-class spawn should succeed"
+  assert_meta_profile "$HOME_DIR/state/$id.meta" claude sonnet xhigh
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "--effort 'xhigh'" "the investigation class default must reach the claude launch"
+  pass "--effort-class investigation applies the built-in xhigh default"
+}
+
+test_effort_class_never_replaces_an_explicit_effort() {
+  local rec id out status launch
+  id='effort-class-explicit-wins-z26'
+  rec=$(make_spawn_case effort-class-explicit-wins claude "$id")
+  read_case_record "$rec"
+  printf 'explicit=xhigh\ninvestigation=xhigh\n' > "$HOME_DIR/config/crew-effort"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model sonnet --effort-class investigation --effort high)
+  status=$?
+  expect_code 0 "$status" "a spawn with both an explicit effort and a class should succeed"
+  assert_meta_profile "$HOME_DIR/state/$id.meta" claude sonnet high
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "--effort 'high'" "the explicit level must reach the claude launch"
+  assert_contains "$out" "supersedes --effort-class investigation (xhigh)" "the spawn must say which level it kept"
+  pass "an explicit --effort level always beats the class default"
+}
+
+test_effort_class_config_overrides_each_class() {
+  local rec id out status launch
+  id='effort-class-config-explicit-z27'
+  rec=$(make_spawn_case effort-class-config-explicit claude "$id")
+  read_case_record "$rec"
+  printf '# local choices\nexplicit=medium\n' > "$HOME_DIR/config/crew-effort"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model sonnet --effort-class explicit)
+  status=$?
+  expect_code 0 "$status" "a configured explicit-class spawn should succeed"
+  assert_meta_profile "$HOME_DIR/state/$id.meta" claude sonnet medium
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "--effort 'medium'" "config/crew-effort must set the level the launch receives"
+  pass "config/crew-effort overrides the explicit class default"
+}
+
+test_effort_class_config_overrides_the_investigation_class() {
+  local rec id out status launch
+  id='effort-class-config-investigation-z28'
+  rec=$(make_spawn_case effort-class-config-investigation claude "$id")
+  read_case_record "$rec"
+  # A line for the other class must still validate.
+  printf 'explicit=high\ninvestigation=medium\n' > "$HOME_DIR/config/crew-effort"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model sonnet --effort-class investigation)
+  status=$?
+  expect_code 0 "$status" "a configured investigation-class spawn should succeed"
+  assert_meta_profile "$HOME_DIR/state/$id.meta" claude sonnet medium
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "--effort 'medium'" "config/crew-effort must set the level the launch receives"
+  pass "config/crew-effort overrides the investigation class default"
+}
+
+test_effort_class_config_is_ignored_without_the_flag() {
+  local rec id out status
+  id='effort-class-config-unused-z29'
+  rec=$(make_spawn_case effort-class-config-unused claude "$id")
+  read_case_record "$rec"
+  printf 'explicit=medium\n' > "$HOME_DIR/config/crew-effort"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model sonnet)
+  status=$?
+  expect_code 0 "$status" "a spawn without the flag should succeed"
+  assert_meta_profile "$HOME_DIR/state/$id.meta" claude sonnet default
+  pass "config/crew-effort never applies to a spawn that passes no --effort-class"
+}
+
+test_effort_class_unsupported_level_is_omitted_per_harness() {
+  local rec id out status launch
+  id='effort-class-unsupported-z30'
+  rec=$(make_spawn_case effort-class-unsupported grok "$id")
+  read_case_record "$rec"
+
+  # grok rejects xhigh, so the investigation class must go through the same
+  # per-harness drop an explicit --effort xhigh already takes.
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model grok-4 --effort-class investigation)
+  status=$?
+  expect_code 0 "$status" "grok spawn on the investigation class should succeed"
+  assert_meta_profile "$HOME_DIR/state/$id.meta" grok grok-4 xhigh
+  launch=$(cat "$LAUNCH_LOG")
+  assert_not_contains "$launch" "--reasoning-effort" "a class level its harness rejects must be omitted, not forced"
+  pass "a class default is validated per harness like any explicit level"
+}
+
+test_effort_class_refuses_an_unknown_class() {
+  local rec id out status
+  id='effort-class-unknown-z31'
+  rec=$(make_spawn_case effort-class-unknown claude "$id")
+  read_case_record "$rec"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model sonnet --effort-class mystery)
+  status=$?
+  expect_code 1 "$status" "an unknown effort class must refuse the spawn"
+  assert_contains "$out" "--effort-class must be one of explicit, investigation" "the refusal must name the accepted classes"
+  assert_absent "$HOME_DIR/state/$id.meta" "refusal must happen before meta is written"
+  pass "an unknown --effort-class refuses before any endpoint or metadata"
+}
+
+test_effort_class_refuses_malformed_config() {
+  local rec id out status bad
+  id='effort-class-malformed-z32'
+  rec=$(make_spawn_case effort-class-malformed claude "$id")
+  read_case_record "$rec"
+
+  for bad in 'explicit=ultra' 'explicit=' 'explicit low' 'mystery=low' 'investigation=low extra'; do
+    printf '%s\n' "$bad" > "$HOME_DIR/config/crew-effort"
+    out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model sonnet --effort-class explicit)
+    status=$?
+    expect_code 1 "$status" "malformed config/crew-effort must refuse the spawn: $bad"
+    assert_contains "$out" "config/crew-effort" "the refusal must name the config file: $bad"
+    assert_absent "$HOME_DIR/state/$id.meta" "refusal must happen before meta is written: $bad"
+  done
+  assert_contains "$out" "accepted values are low, medium, high, xhigh" "an unknown level must list the accepted values"
+
+  rm -f "$HOME_DIR/config/crew-effort"
+  mkdir "$HOME_DIR/config/crew-effort"
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" --model sonnet --effort-class explicit)
+  status=$?
+  expect_code 1 "$status" "a non-file config/crew-effort must refuse the spawn"
+  assert_contains "$out" "config/crew-effort must be a readable regular file" "the refusal must say what the file has to be"
+  assert_absent "$HOME_DIR/state/$id.meta" "refusal must happen before meta is written"
+  pass "a malformed config/crew-effort refuses before any endpoint or metadata"
+}
+
 test_cursor_threads_model_workspace_and_omits_effort_axis() {
   local rec id out status launch
   id=profile-cursor-z6c
@@ -1819,6 +1977,15 @@ test_codex_secondmate_launch_keeps_the_hook_layer
 test_grok_threads_model_and_reasoning_effort
 test_grok_omits_invalid_max_reasoning_effort
 test_grok_omits_invalid_xhigh_reasoning_effort
+test_effort_class_explicit_defaults_to_low
+test_effort_class_investigation_defaults_to_xhigh
+test_effort_class_never_replaces_an_explicit_effort
+test_effort_class_config_overrides_each_class
+test_effort_class_config_overrides_the_investigation_class
+test_effort_class_config_is_ignored_without_the_flag
+test_effort_class_unsupported_level_is_omitted_per_harness
+test_effort_class_refuses_an_unknown_class
+test_effort_class_refuses_malformed_config
 test_cursor_threads_model_workspace_and_omits_effort_axis
 test_cursor_refuses_model_absent_from_live_catalog
 test_cursor_failed_catalog_probe_does_not_block_spawn

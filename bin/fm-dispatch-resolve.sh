@@ -13,6 +13,13 @@
 #   The key lives in one shell variable and reaches curl as a header read from
 #   a file descriptor, never on argv; nothing logs or writes it.
 #
+# No dispatch profiles configured: an absent $FM_HOME/config/crew-dispatch.json
+#   short-circuits ahead of the opt-in gate. Nothing on stdout or stderr, exit
+#   0, no key read, no brief read, no network or quota call. An intake this tool
+#   can never resolve is never invoked, so it costs no step and prints no noise.
+#   A file that exists but holds no rules (a default-only file or "rules": [])
+#   is not the same thing and still answers with the non-clear result below.
+#
 # What it does when on with at least one rule: one POST to
 #   https://api.typesafe.ai/v1/systemone with the project name and the brief's
 #   `## Captain's intent` and `## Firstmate spec` sections, tagged when it is a
@@ -30,8 +37,8 @@
 #   reads its own account's row and an expanded provider with no row for the
 #   candidate is unmeasured, never blocked), and the spendPriority argmax over
 #   the eligible candidates. The model never sees quota, catalogs, approvals,
-#   confidence floors, `why`, or `use`. With no rules, it returns a non-clear
-#   result so firstmate keeps using the existing intake.
+#   confidence floors, `why`, or `use`. With a configured but rule-less file, it
+#   returns a non-clear result so firstmate keeps using the existing intake.
 #   docs/configuration.md "Crew dispatch profiles" owns the declared fields and
 #   "Typed dispatch resolution" owns this tool's operator contract.
 #
@@ -60,7 +67,8 @@
 #   Every outcome exits 0 so an intake is never blocked by this tool.
 #   Exit 2 only for a usage or configuration error (unreadable brief, an
 #   existing unreadable rules file, malformed rules, or missing jq), which is
-#   actionable, never selected around.
+#   actionable, never selected around. An absent rules file is no longer an
+#   error or a non-clear result: it is the silent no-op above.
 #
 # Environment:
 #   TYPESAFE_API_KEY is the only resolver-specific environment setting.
@@ -120,6 +128,19 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# ---- usage ---------------------------------------------------------------------
+[ -n "$BRIEF" ] || die "brief file required (see --help)"
+[ -r "$BRIEF" ] || die "brief file not readable: $BRIEF"
+
+# ---- empty configuration short-circuit -----------------------------------------
+# A home with no dispatch rules has nothing this tool could ever resolve, so the
+# whole step is skipped rather than reported. An absent file (-e) and a dangling
+# symlink (-L) both mean "no profiles configured"; a file that exists is still
+# checked for readability and shape below. The brief is only stat'd, never read.
+if [ ! -e "$RULES_PATH" ] && [ ! -L "$RULES_PATH" ]; then
+  exit 0
+fi
+
 # ---- opt-in gate ---------------------------------------------------------------
 if [ -z "$TYPESAFE_API_KEY_PRIVATE" ]; then
   TYPESAFE_API_KEY_PRIVATE=$(fmx_env_get TYPESAFE_API_KEY "$FM_HOME/.env")
@@ -130,9 +151,6 @@ if [ -z "$TYPESAFE_API_KEY_PRIVATE" ]; then
 fi
 
 # ---- inputs --------------------------------------------------------------------
-[ -n "$BRIEF" ] || die "brief file required (see --help)"
-[ -r "$BRIEF" ] || die "brief file not readable: $BRIEF"
-[ -e "$RULES_PATH" ] || [ -L "$RULES_PATH" ] || no_rules
 [ -r "$RULES_PATH" ] || die "rules file not readable: $RULES_PATH"
 command -v jq >/dev/null 2>&1 || die "jq required"
 RULES=$(mktemp) || die "mktemp failed"

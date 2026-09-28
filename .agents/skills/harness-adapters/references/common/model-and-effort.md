@@ -8,14 +8,16 @@ Add `references/common/dispatch.md` for configured profile precedence.
 `../../../bin/fm-spawn.sh` accepts concrete `--harness`, `--model`, and `--effort` values selected at intake; scripts never parse natural-language dispatch rules.
 The tool reference records verified flags, accepted values, omission behavior, and discovery.
 
-Effort precedence is a per-task captain instruction, then applicable dispatch profile or secondmate pin, then the fallback below.
+Effort precedence is a per-task captain instruction, then an applicable dispatch profile or secondmate pin, then the task's class default below.
 Never replace either higher-precedence value.
-Use the fallback only when neither specifies effort.
 
-Use `low` for well-understood work with an explicit bounded path and `xhigh` for ambiguous investigation or design.
-Choose intermediate levels as complexity, uncertainty, blast radius, or open-ended reasoning rises.
-If an adapter lacks `xhigh`, cap at its highest supported non-`max` level rather than silently omitting the intent.
-Never select `max` through this fallback; only an explicit per-task or standing captain preference permits it.
+This reference owns the class names, and `bin/fm-spawn.sh --effort-class <explicit|investigation>` applies a class's standing level.
+The built-in table is `explicit=low` for well-understood work with an explicit bounded path and `investigation=xhigh` for ambiguous investigation or design.
+Pass the class that matches the task and let the spawn fill in the level.
+A middle level is not a class default: `medium`, `high`, `max`, and `ultra` still need an explicit `--effort` or a configured dispatch profile.
+`$FM_HOME/config/crew-effort` overrides a class's level with one `<class>=<effort>` line per class, and `docs/configuration.md` "Crew effort classes" owns the format, the accepted classes, the accepted values, and how a captain changes them.
+If an adapter lacks the resolved level, cap at its highest supported non-`max` level rather than silently omitting the intent.
+Never select `max` through a class default; only an explicit per-task or standing captain preference permits it.
 
 The explicit native `ultra` value follows the model-scoped refusal contract in `../../../bin/fm-harness.sh validate-native-effort`; it is never silently omitted or mapped to a Pi level.
 For other values, if requested effort is outside the adapter's accepted set, the spawn records `effort=` in task metadata but emits no effort flag.

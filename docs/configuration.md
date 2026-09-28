@@ -10,6 +10,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | Firstmate's code, private files, or project location | [FM_HOME](#fm_home) and [operational home layout](#operational-home-layout-and-state) |
 | Task windows and worker tools | [Runtime backend](#runtime-backend-configbackend--fm_backend) and [harness support](#harness-support) |
 | Worker permissions, accounts, or environment | [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [worker account pin](#worker-account-pin-configclaude-account-configpi-account), and [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist) |
+| Worker effort level per task class | [Crew effort classes](#crew-effort-classes-configcrew-effort) |
 | Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
 | Supervision and presentation | [Pi supervision branch](#pi-supervision-branch), [supervision host](#supervision-host-configsupervision-host), and [Calm preference](#calm-preference-configcalm) |
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
@@ -771,6 +772,7 @@ Changing this pin affects the next secondmate spawn or control-plane relaunch; t
 
 An explicit harness argument to `fm-spawn.sh` still overrides either config file for that spawn only.
 An explicit `--model` or `--effort` overrides the matching token from `config/secondmate-harness`; for a local route, an explicit harness or raw launch command starts with clean model and effort defaults unless those flags are also passed.
+`--effort-class` fills in a per-class default only when neither an explicit `--effort` nor a config token supplies effort ([crew effort classes](#crew-effort-classes-configcrew-effort)).
 
 Remote secondmate routes accept verified harness adapters only and reject raw launch commands.
 When `config/crew-dispatch.json` exists, crewmate and scout spawns require an explicit resolved harness instead of automatically falling back to `config/crew-harness`.
@@ -1091,6 +1093,37 @@ See [`docs/examples/crew-dispatch.json`](examples/crew-dispatch.json) for a star
 
 Secondmate homes inherit this file from the primary, so a secondmate's own crewmates apply the same dispatch profile behavior.
 
+## Crew effort classes (config/crew-effort)
+
+`--effort-class` is how firstmate asks for a standing effort level per kind of task instead of judging a level on every dispatch.
+`bin/fm-spawn.sh` owns the flag and its built-in table: `explicit` is `low`, for well-understood work with an explicit bounded path, and `investigation` is `xhigh`, for ambiguous investigation or design.
+The class is a choice of default, not a level: nothing else is a class, so `medium`, `high`, `max`, and `ultra` remain an explicit `--effort`, a dispatch profile's effort token, or a standing configured effort.
+
+Effort precedence is a per-task captain instruction, then an applicable dispatch profile or secondmate pin, then the class default, and `max` is never reached by a class default.
+A spawn that carries an explicit `--effort` keeps it, so a level the captain or a profile demanded is never replaced by a class default.
+
+**File format (config/crew-effort)**
+
+The optional local, gitignored `config/crew-effort` overrides a class's level.
+It is read only when a spawn passes `--effort-class`, and `FM_CONFIG_OVERRIDE` selects the config directory for tests like the other scripts.
+
+```text
+explicit=medium
+investigation=high
+```
+
+One `<class>=<effort>` line per class, with classes `explicit` and `investigation` and values `low`, `medium`, `high`, and `xhigh`.
+Blank lines and lines beginning with `#` are ignored, the last line for a class wins, and a line naming the other class still has to be valid.
+An unknown class, an unknown or empty value, a line with no `=`, or a file that exists but is not a readable regular file refuses the spawn with an actionable error naming the accepted values, rather than quietly selecting around a malformed configuration.
+
+**Contract owners**
+
+`bin/fm-spawn.sh`'s header owns the flag, the table, the file format, and the refusal messages; `harness-adapters` owns the policy for choosing a class; and `AGENTS.md` section 4 owns the always-loaded precedence line.
+
+**Inheritance**
+
+Secondmate homes inherit this file from the primary, so a secondmate's own crewmates launch on the same per-class effort defaults.
+
 ## Typed dispatch resolution (.env TYPESAFE_API_KEY)
 
 `bin/fm-dispatch-resolve.sh` resolves one concrete crewmate or scout profile from a written brief with typesafe.ai's System One model (Jev), so the rule match that firstmate otherwise reasons out in its own context becomes one short tool turn.
@@ -1108,6 +1141,11 @@ bin/fm-dispatch-resolve.sh data/<id>/brief.md --project <name>        # TOON blo
 **When firstmate invokes the resolver**
 
 Firstmate invokes the resolve path directly after writing the brief, without a preflight; the absent-key off line is handled exactly like every other non-clear outcome.
+
+**When there is nothing to resolve**
+
+No profiles means no resolver turn at all: when the effective home's `config/crew-dispatch.json` is absent, the tool exits 0 in silence, with nothing on stdout or stderr and no network call, so firstmate keeps its own intake judgment and spends no step on the tool.
+The skip is decided by the file's absence alone, and nothing else about a configured home changes: a present file still runs the full resolution below, and a path that exists but cannot be read, including a dangling symlink, is still an actionable error rather than silence.
 
 **What the model receives**
 

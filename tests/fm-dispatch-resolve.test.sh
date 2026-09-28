@@ -367,15 +367,24 @@ cp "$BASE_RULES" "$RULES"
 pass "rules snapshots and shell quoting preserve the profile protocol"
 
 # --- no rules return control to the existing intake ----------------------------
+# Absent means no dispatch profiles are configured, so the whole step is a silent
+# no-op instead of the old escalate result; a present file with no usable rules
+# still returns control below.
 rm -f "$RULES"
 reset_log
 TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
 expect_code 0 "$code" "absent rules file exits 0"
-assert_contains "$out" '  status: escalate' "absent rules file is non-clear"
-assert_contains "$out" '  reason: no rules to match' "absent rules file returns control to firstmate"
-assert_not_contains "$out" '  profile:' "absent rules file emits no profile"
+assert_equals '' "$out" "absent rules file prints nothing on stdout"
+assert_equals '' "$err" "absent rules file prints nothing on stderr, so no dispatch noise"
 assert_absent "$LOG/argv" "absent rules file never calls curl"
 assert_absent "$LOG/quota-axi.calls" "absent rules file never reads quota"
+reset_log
+run code out err "$BRIEF"
+expect_code 0 "$code" "absent rules file exits 0 without the key too"
+assert_equals '' "$out" "absent rules file prints nothing without the key"
+assert_equals '' "$err" "absent rules file stays silent ahead of the off line, so an unconfigured home never sees it"
+assert_absent "$LOG/argv" "absent rules file never calls curl without the key"
+pass "empty configuration: the short-circuit is silent with and without the key"
 
 DEFAULT_ONLY="$TMP_ROOT/default-only.json"
 EMPTY_RULES="$TMP_ROOT/empty-rules.json"

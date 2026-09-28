@@ -85,6 +85,19 @@
 #   build agent's variant, keyed to the resolved model, inside the
 #   OPENCODE_CONFIG_CONTENT JSON its launch already carries (config schema
 #   verified on opencode 1.18.32); without a model the axis is recorded but omitted.
+#   --effort-class <explicit|investigation> is the standing per-class effort
+#   default. AGENTS.md section 4 and .agents/skills/harness-adapters own the
+#   policy; this script owns the levels. The built-in table is explicit=low
+#   (well-understood explicit work) and investigation=xhigh (ambiguous
+#   investigation or design). $CONFIG/crew-effort overrides a class with
+#   one <class>=<effort> line per class (classes explicit and investigation,
+#   values low|medium|high|xhigh; blank lines and # comments ignored, the last
+#   line for a class wins), and a malformed or unreadable file is refused rather
+#   than selected around. It fills in only when no explicit --effort was given,
+#   so a level a captain or a dispatch profile demanded is never replaced, and a
+#   standing configured effort (the secondmate effort token) still wins over it.
+#   max and ultra are never a class default: they stay an explicit --effort or
+#   dispatch-profile choice. The file is read only when this flag is used.
 #   --backend <name> is the explicit runtime session-provider backend for this
 #   exact task only (docs/configuration.md "Runtime backend" owns when that flag
 #   is authorized). Without it, the script resolves FM_BACKEND, then
@@ -637,6 +650,7 @@ KIND_SET=0
 HARNESS_ARG=
 MODEL=
 EFFORT=
+EFFORT_CLASS=
 BACKEND_ARG=
 MODE=
 YOLO=
@@ -645,6 +659,7 @@ TRACEPARENT_ARG=
 HARNESS_SET=0
 MODEL_SET=0
 EFFORT_SET=0
+EFFORT_CLASS_SET=0
 BACKEND_SET=0
 MODE_SET=0
 YOLO_SET=0
@@ -673,6 +688,10 @@ for a in "$@"; do
     effort)
       EFFORT=$a
       EFFORT_SET=1
+      ;;
+    effort-class)
+      EFFORT_CLASS=$a
+      EFFORT_CLASS_SET=1
       ;;
     backend)
       BACKEND_ARG=$a
@@ -726,6 +745,11 @@ for a in "$@"; do
   --effort=*)
     EFFORT=${a#--effort=}
     EFFORT_SET=1
+    ;;
+  --effort-class) want_value='effort-class' ;;
+  --effort-class=*)
+    EFFORT_CLASS=${a#--effort-class=}
+    EFFORT_CLASS_SET=1
     ;;
   --backend) want_value=backend ;;
   --backend=*)
@@ -799,6 +823,71 @@ if [ "$TRACEPARENT_SET" -eq 1 ]; then
     echo "error: --traceparent is not a valid W3C traceparent" >&2
     exit 1
   }
+fi
+
+# --effort-class is the standing per-class effort default (header above). It
+# fills in a level only when no explicit --effort was given; a standing
+# configured effort still overrides it later (the secondmate effort token), so
+# a demanded level is never silently replaced by a class default.
+[ "$EFFORT_CLASS_SET" -eq 0 ] || [ -n "$EFFORT_CLASS" ] || {
+  echo "error: --effort-class requires a non-empty value" >&2
+  exit 1
+}
+if [ "$EFFORT_CLASS_SET" -eq 1 ]; then
+  case "$EFFORT_CLASS" in
+  explicit) EFFORT_CLASS_DEFAULT=low ;;
+  investigation) EFFORT_CLASS_DEFAULT=xhigh ;;
+  *)
+    echo "error: --effort-class must be one of explicit, investigation (got '$EFFORT_CLASS')" >&2
+    exit 1
+    ;;
+  esac
+  # config/crew-effort is an optional override, read only when this flag is used.
+  if ! EFFORT_CLASS_CONFIG_PRESENT=$(fm_config_source_present "$CONFIG/crew-effort"); then
+    exit 1
+  fi
+  if [ "$EFFORT_CLASS_CONFIG_PRESENT" = 1 ]; then
+    if [ ! -f "$CONFIG/crew-effort" ] || [ ! -r "$CONFIG/crew-effort" ]; then
+      echo "error: config/crew-effort must be a readable regular file holding <class>=<effort> lines" >&2
+      exit 1
+    fi
+    while IFS= read -r effort_class_line || [ -n "$effort_class_line" ]; do
+      case "$effort_class_line" in
+      '' | '#'*) continue ;;
+      esac
+      case "$effort_class_line" in
+      *=*) ;;
+      *)
+        echo "error: config/crew-effort line '$effort_class_line' must be <class>=<effort>" >&2
+        exit 1
+        ;;
+      esac
+      effort_class_key=${effort_class_line%%=*}
+      effort_class_level=${effort_class_line#*=}
+      case "$effort_class_key" in
+      explicit | investigation) ;;
+      *)
+        echo "error: config/crew-effort holds unknown class '$effort_class_key'; accepted classes are explicit, investigation" >&2
+        exit 1
+        ;;
+      esac
+      case "$effort_class_level" in
+      low | medium | high | xhigh) ;;
+      *)
+        echo "error: config/crew-effort holds '$effort_class_level' for class '$effort_class_key'; accepted values are low, medium, high, xhigh (pass --effort max or ultra explicitly)" >&2
+        exit 1
+        ;;
+      esac
+      # The last line for this class wins; other classes' lines still validate.
+      [ "$effort_class_key" = "$EFFORT_CLASS" ] || continue
+      EFFORT_CLASS_DEFAULT=$effort_class_level
+    done <"$CONFIG/crew-effort"
+  fi
+  if [ "$EFFORT_SET" -eq 1 ]; then
+    echo "note: --effort $EFFORT supersedes --effort-class $EFFORT_CLASS ($EFFORT_CLASS_DEFAULT); the explicit level wins" >&2
+  else
+    EFFORT=$EFFORT_CLASS_DEFAULT
+  fi
 fi
 case "$EFFORT" in
 '' | low | medium | high | xhigh | max | ultra) ;;
